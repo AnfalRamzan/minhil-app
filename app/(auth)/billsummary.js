@@ -1,12 +1,19 @@
-// app/(tabs)/billsummary.js - COMPLETE FIXED VERSION
+// app/billsummary.js - COMPLETE WITH DIRECT DARAZ LINK FUNCTION
 
 import React, { useState, useEffect } from 'react';
 import { 
   View, Text, FlatList, TouchableOpacity, StyleSheet, 
-  Alert, ScrollView, ActivityIndicator 
+  Alert, ScrollView, ActivityIndicator, Linking 
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { saveBill, formatPKR } from '../../config/firebase';
+
+// ✅ DIRECT DARAZ LINK GENERATOR FUNCTION (YAHI PE DEFINE KARO)
+const generateDarazLink = (productName) => {
+  if (!productName) return 'https://www.daraz.pk/';
+  const searchQuery = encodeURIComponent(productName.trim().toLowerCase());
+  return `https://www.daraz.pk/catalog/?q=${searchQuery}&spm=a2a0e.tm80335411.search.1`;
+};
 
 export default function BillSummary() {
   const router = useRouter();
@@ -24,7 +31,12 @@ export default function BillSummary() {
     if (params.cart && params.total) {
       try {
         const parsedCart = JSON.parse(params.cart);
-        setCart(parsedCart);
+        // Add Daraz link to each cart item
+        const cartWithLinks = parsedCart.map(item => ({
+          ...item,
+          marketUrl: generateDarazLink(item.name)
+        }));
+        setCart(cartWithLinks);
         
         const currentTotal = parseFloat(params.total);
         setTotal(currentTotal);
@@ -34,7 +46,7 @@ export default function BillSummary() {
           original = parseFloat(params.originalTotal);
           setOriginalTotal(original);
         } else {
-          original = parsedCart.reduce((sum, item) => sum + ((item.originalPrice || item.price) * item.quantity), 0);
+          original = cartWithLinks.reduce((sum, item) => sum + ((item.originalPrice || item.price) * item.quantity), 0);
           setOriginalTotal(original);
         }
         
@@ -73,7 +85,8 @@ export default function BillSummary() {
           originalPrice: item.originalPrice || item.price,
           total: (item.discountedPrice || item.price) * item.quantity,
           discount: item.discount || 0,
-          discountReason: item.discountReason || 'No discount'
+          discountReason: item.discountReason || 'No discount',
+          marketUrl: item.marketUrl || generateDarazLink(item.name)
         })),
         subtotal: total,
         originalSubtotal: originalTotal,
@@ -106,6 +119,14 @@ export default function BillSummary() {
     }
     
     setLoading(false);
+  };
+
+  const openDarazLink = (url, productName) => {
+    const finalUrl = url || generateDarazLink(productName);
+    console.log('Opening Daraz URL:', finalUrl);  // ✅ DEBUG: Check if URL is generated
+    Linking.openURL(finalUrl).catch(() => {
+      Alert.alert('Error', `Cannot open Daraz for ${productName}`);
+    });
   };
 
   const getDiscountColor = (discount) => {
@@ -154,6 +175,14 @@ export default function BillSummary() {
                 📊 {item.discountReason}
               </Text>
             )}
+            
+            {/* ✅ DARAZ COMPARE BUTTON */}
+            <TouchableOpacity 
+              style={styles.darazButton}
+              onPress={() => openDarazLink(item.marketUrl, item.name)}
+            >
+              <Text style={styles.darazButtonText}>🧡 Compare {item.name} on Daraz</Text>
+            </TouchableOpacity>
           </View>
         </View>
         
@@ -200,7 +229,6 @@ export default function BillSummary() {
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.iconCircle}>
           <Text style={styles.headerIcon}>📋</Text>
@@ -209,7 +237,6 @@ export default function BillSummary() {
         <Text style={styles.headerSubtitle}>Review your order before generating bill</Text>
       </View>
 
-      {/* AI Savings Banner */}
       {totalDiscount > 0 && (
         <View style={styles.savingsBanner}>
           <Text style={styles.savingsIcon}>🎉</Text>
@@ -223,7 +250,6 @@ export default function BillSummary() {
         </View>
       )}
 
-      {/* Order Items Card */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
@@ -243,7 +269,6 @@ export default function BillSummary() {
         />
       </View>
 
-      {/* Amount Summary Card */}
       <View style={styles.summaryCard}>
         <Text style={styles.summaryTitle}>💰 Amount Summary</Text>
         
@@ -279,7 +304,6 @@ export default function BillSummary() {
         </View>
       </View>
 
-      {/* Discount Breakdown */}
       {cart.some(item => item.discount > 0) && (
         <View style={styles.discountBreakdownCard}>
           <Text style={styles.breakdownTitle}>✨ AI Discount Breakdown</Text>
@@ -307,7 +331,6 @@ export default function BillSummary() {
         </View>
       )}
 
-      {/* AI Learning Note */}
       <View style={styles.aiNoteCard}>
         <Text style={styles.aiNoteIcon}>🧠</Text>
         <View style={styles.aiNoteContent}>
@@ -318,7 +341,6 @@ export default function BillSummary() {
         </View>
       </View>
 
-      {/* Buttons */}
       <View style={styles.buttonContainer}>
         <TouchableOpacity style={styles.generateBtn} onPress={generateBill} activeOpacity={0.8}>
           <Text style={styles.generateBtnText}>✅ Generate Bill & Save</Text>
@@ -372,6 +394,17 @@ const styles = StyleSheet.create({
   discountPill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 },
   discountPillText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
   discountReason: { fontSize: 10, color: '#666', marginTop: 2 },
+  darazButton: { 
+    backgroundColor: '#fff3e0', 
+    paddingHorizontal: 12, 
+    paddingVertical: 8, 
+    borderRadius: 20, 
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#f39c12',
+    alignSelf: 'flex-start'
+  },
+  darazButtonText: { color: '#e67e22', fontSize: 11, fontWeight: '600' },
   itemDetails: { alignItems: 'flex-end', minWidth: 100 },
   itemOriginalPrice: { fontSize: 11, textDecorationLine: 'line-through', color: '#999' },
   itemPrice: { fontSize: 15, fontWeight: 'bold', color: '#e67e22', marginTop: 2 },
