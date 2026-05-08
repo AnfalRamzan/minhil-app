@@ -18,7 +18,6 @@ export default function TabLayout() {
         tabBarShowLabel: true,
       }}
     >
-      {/* ONLY 5 TABS - These will show in bottom bar */}
       <Tabs.Screen
         name="dashboard"
         options={{

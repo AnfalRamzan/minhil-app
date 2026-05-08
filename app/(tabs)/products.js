@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Modal, RefreshControl } from 'react-native';
-import { getProducts, addProduct, updateProduct, deleteProduct } from '../config/firebase';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Modal, RefreshControl, ActivityIndicator } from 'react-native';
+import { getProducts, addProduct, updateProduct, deleteProduct } from '../../config/firebase';
+import { useFocusEffect } from '@react-navigation/native';
 
 export default function Products() {
   const [products, setProducts] = useState([]);
@@ -11,18 +12,29 @@ export default function Products() {
   const [category, setCategory] = useState('');
   const [stock, setStock] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProducts();
+      return () => {};
+    }, [])
+  );
 
   useEffect(() => {
     loadProducts();
   }, []);
 
   const loadProducts = async () => {
+    setLoading(true);
     const result = await getProducts();
     if (result.success) {
       setProducts(result.products);
+      console.log('Products loaded:', result.products.length);
     } else {
       Alert.alert('Error', result.error);
     }
+    setLoading(false);
   };
 
   const onRefresh = async () => {
@@ -41,12 +53,20 @@ export default function Products() {
       return;
     }
 
+    const priceValue = parseFloat(price);
+    if (isNaN(priceValue) || priceValue <= 0) {
+      Alert.alert('Error', 'Please enter a valid price');
+      return;
+    }
+
     const productData = {
-      name,
-      price: parseFloat(price),
-      category: category || 'General',
+      name: name.trim(),
+      price: priceValue,
+      category: category.trim() || 'General',
       stock: parseInt(stock) || 0,
     };
+
+    setLoading(true);
 
     let result;
     if (editingProduct) {
@@ -56,13 +76,14 @@ export default function Products() {
     }
 
     if (result.success) {
-      Alert.alert('Success', editingProduct ? 'Product updated' : 'Product added');
+      Alert.alert('Success', editingProduct ? 'Product updated!' : 'Product added!');
       setModalVisible(false);
       resetForm();
-      loadProducts();
+      await loadProducts();
     } else {
-      Alert.alert('Error', result.error);
+      Alert.alert('Error', result.error || 'Failed to save product');
     }
+    setLoading(false);
   };
 
   const deleteProductItem = async (id) => {
@@ -72,13 +93,15 @@ export default function Products() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
+          setLoading(true);
           const result = await deleteProduct(id);
           if (result.success) {
-            loadProducts();
+            await loadProducts();
             Alert.alert('Success', 'Product deleted');
           } else {
             Alert.alert('Error', result.error);
           }
+          setLoading(false);
         }
       }
     ]);
@@ -92,6 +115,15 @@ export default function Products() {
     setEditingProduct(null);
   };
 
+  const editProduct = (product) => {
+    setEditingProduct(product);
+    setName(product.name);
+    setPrice((product.pricePKR || product.price).toString());
+    setCategory(product.category || 'General');
+    setStock((product.stock || 0).toString());
+    setModalVisible(true);
+  };
+
   const renderProduct = ({ item }) => (
     <View style={styles.productCard}>
       <View style={styles.productInfo}>
@@ -99,7 +131,7 @@ export default function Products() {
           <Text style={styles.productName}>{item.name}</Text>
           {item.discount > 0 && (
             <View style={styles.discountPill}>
-              <Text style={styles.discountPillText}>{item.discount}% OFF</Text>
+              <Text style={styles.discountPillText}>AI -{item.discount}%</Text>
             </View>
           )}
         </View>
@@ -120,28 +152,24 @@ export default function Products() {
         </View>
       </View>
       <View style={styles.productActions}>
-        <TouchableOpacity 
-          style={styles.editBtn}
-          onPress={() => {
-            setEditingProduct(item);
-            setName(item.name);
-            setPrice((item.pricePKR || item.price).toString());
-            setCategory(item.category || 'General');
-            setStock((item.stock || 0).toString());
-            setModalVisible(true);
-          }}
-        >
+        <TouchableOpacity style={styles.editBtn} onPress={() => editProduct(item)}>
           <Text style={styles.editBtnText}>✏️ Edit</Text>
         </TouchableOpacity>
-        <TouchableOpacity 
-          style={styles.deleteBtn}
-          onPress={() => deleteProductItem(item.id)}
-        >
+        <TouchableOpacity style={styles.deleteBtn} onPress={() => deleteProductItem(item.id)}>
           <Text style={styles.deleteBtnText}>🗑️ Delete</Text>
         </TouchableOpacity>
       </View>
     </View>
   );
+
+  if (loading && products.length === 0) {
+    return (
+      <View style={styles.centerContainer}>
+        <ActivityIndicator size="large" color="#1a73e8" />
+        <Text style={styles.loadingText}>Loading products...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -149,6 +177,7 @@ export default function Products() {
         <Text style={styles.headerTitle}>📦 Products</Text>
         <Text style={styles.productCount}>{products.length} products</Text>
       </View>
+      
       <TouchableOpacity style={styles.addButton} onPress={() => {
         resetForm();
         setModalVisible(true);
@@ -175,7 +204,9 @@ export default function Products() {
       <Modal visible={modalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{editingProduct ? '✏️ Edit Product' : '➕ Add New Product'}</Text>
+            <Text style={styles.modalTitle}>
+              {editingProduct ? '✏️ Edit Product' : '➕ Add New Product'}
+            </Text>
             
             <TextInput 
               style={styles.modalInput} 
@@ -184,6 +215,7 @@ export default function Products() {
               value={name} 
               onChangeText={setName} 
             />
+            
             <TextInput 
               style={styles.modalInput} 
               placeholder="Price (PKR)" 
@@ -192,6 +224,7 @@ export default function Products() {
               onChangeText={setPrice} 
               keyboardType="numeric" 
             />
+            
             <TextInput 
               style={styles.modalInput} 
               placeholder="Category" 
@@ -199,6 +232,7 @@ export default function Products() {
               value={category} 
               onChangeText={setCategory} 
             />
+            
             <TextInput 
               style={styles.modalInput} 
               placeholder="Stock Quantity" 
@@ -209,8 +243,10 @@ export default function Products() {
             />
             
             <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.saveBtn} onPress={saveProduct}>
-                <Text style={styles.saveBtnText}>Save</Text>
+              <TouchableOpacity style={styles.saveBtn} onPress={saveProduct} disabled={loading}>
+                <Text style={styles.saveBtnText}>
+                  {loading ? 'Saving...' : (editingProduct ? 'Update' : 'Save')}
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.cancelBtn} onPress={() => {
                 setModalVisible(false);
@@ -227,234 +263,44 @@ export default function Products() {
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#f5f7fa',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1a73e8',
-  },
-  productCount: {
-    fontSize: 14,
-    color: '#666',
-    backgroundColor: '#f0f0f0',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 20,
-  },
-  addButton: { 
-    backgroundColor: '#1a73e8', 
-    padding: 16, 
-    margin: 15,
-    borderRadius: 14, 
-    alignItems: 'center',
-    shadowColor: '#1a73e8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  addButtonText: { 
-    color: '#fff', 
-    fontSize: 16, 
-    fontWeight: 'bold',
-  },
-  productCard: { 
-    backgroundColor: '#fff', 
-    borderRadius: 16, 
-    padding: 16, 
-    marginHorizontal: 15,
-    marginBottom: 12,
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  productInfo: { 
-    flex: 1,
-  },
-  productHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  productName: { 
-    fontSize: 16, 
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  discountPill: {
-    backgroundColor: '#e67e22',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
-  },
-  discountPillText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  productCategory: { 
-    fontSize: 12, 
-    color: '#666', 
-    marginBottom: 6,
-  },
-  priceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 6,
-  },
-  productOldPrice: {
-    fontSize: 12,
-    textDecorationLine: 'line-through',
-    color: '#999',
-  },
-  productPrice: { 
-    fontSize: 18, 
-    color: '#1a73e8', 
-    fontWeight: 'bold',
-  },
-  stockRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  productStock: { 
-    fontSize: 12, 
-    color: '#666',
-  },
-  productSales: {
-    fontSize: 12,
-    color: '#34a853',
-  },
-  productActions: { 
-    flexDirection: 'column', 
-    gap: 8,
-  },
-  editBtn: { 
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    backgroundColor: '#e8f0fe', 
-    borderRadius: 10, 
-    alignItems: 'center',
-  },
-  editBtnText: { 
-    color: '#1a73e8',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  deleteBtn: { 
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    backgroundColor: '#fee8e8', 
-    borderRadius: 10, 
-    alignItems: 'center',
-  },
-  deleteBtnText: { 
-    color: '#dc3545',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 80,
-  },
-  emptyIcon: {
-    fontSize: 64,
-    marginBottom: 16,
-    opacity: 0.5,
-  },
-  emptyText: { 
-    textAlign: 'center', 
-    color: '#999', 
-    fontSize: 18,
-    fontWeight: '500',
-    marginBottom: 8,
-  },
-  emptySubText: {
-    textAlign: 'center',
-    color: '#bbb',
-    fontSize: 13,
-  },
-  emptyContent: {
-    flex: 1,
-  },
-  modalOverlay: { 
-    flex: 1, 
-    backgroundColor: 'rgba(0,0,0,0.5)', 
-    justifyContent: 'center', 
-    alignItems: 'center' 
-  },
-  modalContent: { 
-    backgroundColor: '#fff', 
-    borderRadius: 24, 
-    padding: 24, 
-    width: '85%' 
-  },
-  modalTitle: { 
-    fontSize: 22, 
-    fontWeight: 'bold', 
-    marginBottom: 20, 
-    textAlign: 'center',
-    color: '#1a73e8',
-  },
-  modalInput: { 
-    borderWidth: 1.5, 
-    borderColor: '#e0e0e0', 
-    borderRadius: 14, 
-    padding: 14, 
-    marginBottom: 15, 
-    fontSize: 16,
-    backgroundColor: '#fafafa',
-  },
-  modalButtons: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    gap: 12,
-    marginTop: 10,
-  },
-  saveBtn: { 
-    flex: 1, 
-    backgroundColor: '#34a853', 
-    padding: 14, 
-    borderRadius: 12, 
-    alignItems: 'center' 
-  },
-  saveBtnText: { 
-    color: '#fff', 
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
-  cancelBtn: { 
-    flex: 1, 
-    backgroundColor: '#dc3545', 
-    padding: 14, 
-    borderRadius: 12, 
-    alignItems: 'center' 
-  },
-  cancelBtnText: { 
-    color: '#fff', 
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
+  container: { flex: 1, backgroundColor: '#f5f7fa' },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f5f7fa' },
+  loadingText: { marginTop: 10, color: '#666' },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e0e0e0' },
+  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#1a73e8' },
+  productCount: { fontSize: 14, color: '#666', backgroundColor: '#f0f0f0', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20 },
+  addButton: { backgroundColor: '#1a73e8', padding: 16, margin: 15, borderRadius: 14, alignItems: 'center', shadowColor: '#1a73e8', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 4 },
+  addButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  productCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginHorizontal: 15, marginBottom: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 3 },
+  productInfo: { flex: 1 },
+  productHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  productName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+  discountPill: { backgroundColor: '#e67e22', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 },
+  discountPillText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+  productCategory: { fontSize: 12, color: '#666', marginBottom: 6 },
+  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
+  productOldPrice: { fontSize: 12, textDecorationLine: 'line-through', color: '#999' },
+  productPrice: { fontSize: 18, color: '#1a73e8', fontWeight: 'bold' },
+  stockRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  productStock: { fontSize: 12, color: '#666' },
+  productSales: { fontSize: 12, color: '#34a853' },
+  productActions: { flexDirection: 'column', gap: 8 },
+  editBtn: { paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#e8f0fe', borderRadius: 10, alignItems: 'center' },
+  editBtnText: { color: '#1a73e8', fontSize: 13, fontWeight: '500' },
+  deleteBtn: { paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#fee8e8', borderRadius: 10, alignItems: 'center' },
+  deleteBtnText: { color: '#dc3545', fontSize: 13, fontWeight: '500' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 80 },
+  emptyIcon: { fontSize: 64, marginBottom: 16, opacity: 0.5 },
+  emptyText: { textAlign: 'center', color: '#999', fontSize: 18, fontWeight: '500', marginBottom: 8 },
+  emptySubText: { textAlign: 'center', color: '#bbb', fontSize: 13 },
+  emptyContent: { flex: 1 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 24, width: '85%' },
+  modalTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 20, textAlign: 'center', color: '#1a73e8' },
+  modalInput: { borderWidth: 1.5, borderColor: '#e0e0e0', borderRadius: 14, padding: 14, marginBottom: 15, fontSize: 16, backgroundColor: '#fafafa' },
+  modalButtons: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginTop: 10 },
+  saveBtn: { flex: 1, backgroundColor: '#34a853', padding: 14, borderRadius: 12, alignItems: 'center' },
+  saveBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  cancelBtn: { flex: 1, backgroundColor: '#dc3545', padding: 14, borderRadius: 12, alignItems: 'center' },
+  cancelBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
 });

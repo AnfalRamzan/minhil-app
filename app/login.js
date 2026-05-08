@@ -4,7 +4,7 @@ import {
   StyleSheet, Alert, ActivityIndicator, ScrollView 
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { loginUser, registerUser } from './config/firebase';
+import { loginUser, registerUser } from '../config/firebase';
 
 export default function Login() {
   const router = useRouter();

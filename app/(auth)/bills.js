@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert, RefreshControl, Modal } from 'react-native';
-import { getBills } from '../config/firebase';
+import { getBills } from '../../config/firebase';
 
 export default function Bills() {
   const [bills, setBills] = useState([]);

@@ -119,7 +119,7 @@ export default function BillSummary() {
           <Text style={styles.itemName}>{item.name}</Text>
           {item.discount > 0 && (
             <View style={styles.itemDiscountContainer}>
-              <Text style={styles.itemDiscount}>-{item.discount}% OFF</Text>
+              <Text style={styles.itemDiscount}>AI -{item.discount}% OFF</Text>
               {item.discountReason && (
                 <Text style={styles.itemDiscountReason} numberOfLines={1}>
                   {item.discountReason}
@@ -186,7 +186,7 @@ export default function BillSummary() {
         <View style={styles.savingsBanner}>
           <Text style={styles.savingsIcon}>🎉</Text>
           <View style={styles.savingsContent}>
-            <Text style={styles.savingsTitle}>You Saved!</Text>
+            <Text style={styles.savingsTitle}>AI Smart Savings!</Text>
             <Text style={styles.savingsAmount}>{formatPrice(totalDiscount)}</Text>
             <Text style={styles.savingsPercent}>
               ({savingsPercentage.toFixed(1)}% off on total purchase)
@@ -227,7 +227,7 @@ export default function BillSummary() {
               </Text>
             </View>
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Total Discount:</Text>
+              <Text style={styles.summaryLabel}>AI Discount:</Text>
               <Text style={[styles.summaryValue, styles.discountText]}>
                 -{formatPrice(totalDiscount)}
               </Text>
@@ -257,23 +257,39 @@ export default function BillSummary() {
       {/* Discount Breakdown Section - Show per item savings */}
       {cart.some(item => item.discount > 0) && (
         <View style={styles.discountBreakdownCard}>
-          <Text style={styles.breakdownTitle}>✨ Discount Breakdown</Text>
-          {cart.filter(item => item.discount > 0).map((item, idx) => (
-            <View key={idx} style={styles.breakdownItem}>
-              <View style={styles.breakdownLeft}>
-                <Text style={styles.breakdownProduct}>{item.name}</Text>
-                <Text style={styles.breakdownReason}>{item.discountReason || 'Special discount applied'}</Text>
+          <Text style={styles.breakdownTitle}>✨ AI Discount Breakdown</Text>
+          {cart.filter(item => item.discount > 0).map((item, idx) => {
+            const itemOriginalTotal = (item.originalPrice || item.price) * item.quantity;
+            const itemDiscountedTotal = item.price * item.quantity;
+            const itemSaved = itemOriginalTotal - itemDiscountedTotal;
+            return (
+              <View key={idx} style={styles.breakdownItem}>
+                <View style={styles.breakdownLeft}>
+                  <Text style={styles.breakdownProduct}>{item.name}</Text>
+                  <Text style={styles.breakdownReason}>{item.discountReason || 'AI best price applied'}</Text>
+                </View>
+                <View style={styles.breakdownRight}>
+                  <Text style={styles.breakdownPercent}>-{item.discount}%</Text>
+                  <Text style={styles.breakdownSaved}>
+                    Saved: {formatPrice(itemSaved)}
+                  </Text>
+                </View>
               </View>
-              <View style={styles.breakdownRight}>
-                <Text style={styles.breakdownPercent}>-{item.discount}%</Text>
-                <Text style={styles.breakdownSaved}>
-                  Saved: {formatPrice((item.originalPrice - item.price) * item.quantity)}
-                </Text>
-              </View>
-            </View>
-          ))}
+            );
+          })}
         </View>
       )}
+
+      {/* AI Learning Note */}
+      <View style={styles.aiNoteCard}>
+        <Text style={styles.aiNoteIcon}>🧠</Text>
+        <View style={styles.aiNoteContent}>
+          <Text style={styles.aiNoteTitle}>AI Learning Active</Text>
+          <Text style={styles.aiNoteText}>
+            This purchase will help AI learn buying patterns for better future recommendations
+          </Text>
+        </View>
+      </View>
 
       <View style={styles.buttonContainer}>
         <TouchableOpacity 
@@ -281,7 +297,7 @@ export default function BillSummary() {
           onPress={generateBill}
           activeOpacity={0.8}
         >
-          <Text style={styles.generateBtnText}>✅ Generate Bill</Text>
+          <Text style={styles.generateBtnText}>✅ Generate Bill & Save</Text>
         </TouchableOpacity>
         
         <TouchableOpacity 
@@ -670,6 +686,32 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#34a853',
     marginTop: 2,
+  },
+  aiNoteCard: {
+    backgroundColor: '#e8f0fe',
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 16,
+    borderRadius: 16,
+  },
+  aiNoteIcon: {
+    fontSize: 32,
+    marginRight: 12,
+  },
+  aiNoteContent: {
+    flex: 1,
+  },
+  aiNoteTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#1a73e8',
+    marginBottom: 4,
+  },
+  aiNoteText: {
+    fontSize: 11,
+    color: '#555',
   },
   buttonContainer: {
     paddingHorizontal: 16,

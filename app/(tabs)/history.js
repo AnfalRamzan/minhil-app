@@ -3,7 +3,7 @@ import {
   View, Text, FlatList, StyleSheet, TouchableOpacity, 
   Alert, RefreshControl, Modal, ScrollView 
 } from 'react-native';
-import { getBills } from '../config/firebase';
+import { getBills } from '../../config/firebase';;
 
 export default function History() {
   const [bills, setBills] = useState([]);
