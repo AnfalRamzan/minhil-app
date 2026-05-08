@@ -1,4 +1,4 @@
-// config/firebase.js - FIXED (DUPLICATE EXPORT REMOVED)
+// config/firebase.js - COMPLETE FIXED VERSION (No Hardcoding)
 
 import { initializeApp } from 'firebase/app';
 import { 
@@ -15,7 +15,8 @@ import {
   where,
   setDoc,
   onSnapshot,
-  limit
+  limit,
+  writeBatch
 } from 'firebase/firestore';
 import { 
   initializeAuth, 
@@ -50,103 +51,186 @@ export const formatPKR = (amount) => {
   return `₨ ${Math.round(amount).toLocaleString('en-PK') || 0}`;
 };
 
-// ================= DYNAMIC DARAZ LINK GENERATOR =================
+// ================= DARAZ LINK GENERATOR (UNIFIED) =================
 export const generateDarazLink = (productName) => {
-  if (!productName) return 'https://www.daraz.pk/';
+  if (!productName || productName === 'Unknown') return 'https://www.daraz.pk/';
   const searchQuery = encodeURIComponent(productName.trim().toLowerCase());
   return `https://www.daraz.pk/catalog/?q=${searchQuery}&spm=a2a0e.tm80335411.search.1`;
 };
 
-// ================= MARKET DATA WITH DYNAMIC LINKS =================
-const marketPriceDatabase = {
-  'sugar': { price: 135, trend: 'falling' },
-  'milk': { price: 150, trend: 'stable' },
-  'bread': { price: 120, trend: 'stable' },
-  'butter': { price: 350, trend: 'rising' },
-  'rice': { price: 199, trend: 'stable' },
-  'tea': { price: 450, trend: 'stable' },
-  'coffee': { price: 550, trend: 'rising' },
-  'cooking oil': { price: 449, trend: 'rising' },
-  'eggs': { price: 280, trend: 'rising' },
-  'chicken': { price: 550, trend: 'rising' },
-  'flour': { price: 180, trend: 'falling' },
-  'salt': { price: 60, trend: 'stable' },
-  'candy': { price: 85, trend: 'stable' },
-  'chips': { price: 80, trend: 'stable' },
-  'soap': { price: 119, trend: 'stable' },
-  'shampoo': { price: 349, trend: 'falling' },
-  'juice': { price: 180, trend: 'stable' },
-  'yogurt': { price: 120, trend: 'stable' },
-  'ketchup': { price: 250, trend: 'stable' },
-  'coke': { price: 150, trend: 'stable' },
-  'pepsi': { price: 150, trend: 'stable' }
+// ================= REAL API INTEGRATION (NO HARDCODING) =================
+// IMPORTANT: Get free API key from https://serper.dev/
+// Store it in environment variable or AsyncStorage
+let SERPER_API_KEY = null;
+
+export const setSerperApiKey = (apiKey) => {
+  SERPER_API_KEY = apiKey;
+  return { success: true };
 };
 
+export const getSerperApiKey = async () => {
+  if (SERPER_API_KEY) return SERPER_API_KEY;
+  try {
+    const savedKey = await AsyncStorage.getItem('serper_api_key');
+    if (savedKey) SERPER_API_KEY = savedKey;
+    return SERPER_API_KEY;
+  } catch {
+    return null;
+  }
+};
+
+export const fetchRealMarketPriceFromAPI = async (productName) => {
+  try {
+    const apiKey = await getSerperApiKey();
+    
+    // If no API key, return null (will use database-only mode)
+    if (!apiKey) {
+      return { success: false, error: 'No API key', useDatabaseOnly: true };
+    }
+
+    const response = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ 
+        q: `${productName} price in Pakistan PKR`,
+        num: 5
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    let extractedPrice = null;
+    
+    if (data.organic && data.organic.length > 0) {
+      for (const result of data.organic) {
+        const text = (result.title + ' ' + (result.snippet || '')).toLowerCase();
+        const priceMatch = text.match(/(?:₨|rs|pkr|rupees?)\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/i);
+        if (priceMatch) {
+          extractedPrice = parseFloat(priceMatch[1].replace(/,/g, ''));
+          break;
+        }
+      }
+    }
+    
+    return {
+      success: true,
+      marketPrice: extractedPrice,
+      source: 'Serper.dev (Google Search)',
+      trend: 'stable',
+      url: generateDarazLink(productName),
+      exactMatch: extractedPrice !== null
+    };
+  } catch (error) {
+    return { success: false, error: error.message, useDatabaseOnly: true };
+  }
+};
+
+// ================= MARKET PRICE FROM FIREBASE DATABASE ONLY =================
+export const fetchMarketPriceFromDB = async (productName, category = 'default') => {
+  try {
+    // First, try to get exact product match from products collection
+    const productsRef = collection(db, 'products');
+    const q = query(productsRef, where('name', '>=', productName), where('name', '<=', productName + '\uf8ff'), limit(1));
+    const snapshot = await getDocs(q);
+    
+    if (!snapshot.empty) {
+      const product = snapshot.docs[0].data();
+      if (product.marketPrice) {
+        return {
+          success: true,
+          marketPrice: product.marketPrice,
+          source: 'Database (Exact Match)',
+          trend: product.marketTrend || 'stable',
+          url: generateDarazLink(productName),
+          exactMatch: true
+        };
+      }
+    }
+    
+    // If no exact match, get category average price
+    const categoryQuery = query(productsRef, where('category', '==', category), limit(10));
+    const categorySnapshot = await getDocs(categoryQuery);
+    
+    if (!categorySnapshot.empty) {
+      let totalPrice = 0;
+      let count = 0;
+      categorySnapshot.forEach(doc => {
+        const data = doc.data();
+        const price = data.pricePKR || data.price || 0;
+        if (price > 0) {
+          totalPrice += price;
+          count++;
+        }
+      });
+      
+      if (count > 0) {
+        const avgPrice = totalPrice / count;
+        return {
+          success: true,
+          marketPrice: Math.round(avgPrice),
+          source: `Database (${category} Category Average)`,
+          trend: 'stable',
+          url: generateDarazLink(productName),
+          exactMatch: false
+        };
+      }
+    }
+    
+    // Return null if no data found
+    return { success: false, marketPrice: null, error: 'No market data available' };
+  } catch (error) {
+    return { success: false, marketPrice: null, error: error.message };
+  }
+};
+
+// ================= MAIN MARKET PRICE FETCH =================
 let marketCache = {};
 
-// ================= REAL-TIME MARKET PRICE FETCH =================
 export const fetchMarketPrice = async (productName, category = 'default') => {
   const searchKey = (productName || "").toLowerCase().trim();
   
+  // Check cache (5 minutes)
   if (marketCache[searchKey] && (Date.now() - marketCache[searchKey].timestamp) < 300000) {
     return marketCache[searchKey].data;
   }
   
-  const darazUrl = generateDarazLink(productName);
+  // Try real API first if key exists
+  const apiKey = await getSerperApiKey();
+  let result = null;
   
-  let marketPrice = null;
-  let trend = 'stable';
-  let exactMatch = false;
-  
-  for (const [key, data] of Object.entries(marketPriceDatabase)) {
-    if (searchKey === key || searchKey.includes(key) || key.includes(searchKey)) {
-      marketPrice = data.price;
-      trend = data.trend;
-      exactMatch = true;
-      break;
-    }
+  if (apiKey) {
+    result = await fetchRealMarketPriceFromAPI(productName);
   }
   
-  if (!marketPrice) {
-    const categoryPrices = {
-      'dairy': { price: 180, trend: 'rising' },
-      'grocery': { price: 150, trend: 'stable' },
-      'bakery': { price: 120, trend: 'stable' },
-      'beverage': { price: 200, trend: 'stable' },
-      'snacks': { price: 80, trend: 'stable' },
-      'personal': { price: 250, trend: 'stable' },
-      'meat': { price: 500, trend: 'rising' },
-      'default': { price: 150, trend: 'stable' }
-    };
-    const catKey = category?.toLowerCase() || 'default';
-    const estimate = categoryPrices[catKey] || categoryPrices.default;
-    marketPrice = estimate.price;
-    trend = estimate.trend;
+  // If API didn't return a price, try database
+  if (!result || !result.marketPrice) {
+    result = await fetchMarketPriceFromDB(productName, category);
   }
   
-  const hour = new Date().getHours();
-  let timeVariation = 1;
-  if (hour >= 10 && hour <= 12) timeVariation = 0.95;
-  else if (hour >= 20 && hour <= 23) timeVariation = 0.92;
-  
-  const finalMarketPrice = Math.round(marketPrice * timeVariation);
-  
-  const result = {
-    found: true,
-    exactMatch: exactMatch,
-    marketPrice: finalMarketPrice,
-    source: 'Daraz.pk',
-    url: darazUrl,
-    trend: trend,
-    competitorCount: Math.floor(Math.random() * 10) + 3,
+  // If still no price, return null (no hardcoded fallback)
+  const finalResult = {
+    found: result?.marketPrice !== null,
+    exactMatch: result?.exactMatch || false,
+    marketPrice: result?.marketPrice || null,
+    source: result?.source || 'No data available',
+    url: generateDarazLink(productName),
+    trend: result?.trend || 'unknown',
+    competitorCount: null,
     lastUpdated: new Date().toISOString()
   };
   
-  marketCache[searchKey] = { data: result, timestamp: Date.now() };
-  return result;
+  marketCache[searchKey] = { data: finalResult, timestamp: Date.now() };
+  return finalResult;
 };
 
-// ================= AI DISCOUNT CALCULATION =================
+// ================= AI DISCOUNT CALCULATION (NO HARDCODING) =================
 export const calculateAIDynamicDiscount = async (product, salesData = null, stockData = null) => {
   if (!product) {
     return { 
@@ -156,7 +240,8 @@ export const calculateAIDynamicDiscount = async (product, salesData = null, stoc
       reason: 'Invalid product', 
       savings: 0,
       marketUrl: generateDarazLink(''),
-      marketPrice: null
+      marketPrice: null,
+      useDynamicPricing: true
     };
   }
   
@@ -169,110 +254,78 @@ export const calculateAIDynamicDiscount = async (product, salesData = null, stoc
       discount: 0, 
       discountedPrice: currentPrice, 
       originalPrice: currentPrice,
-      reason: 'Invalid price', 
+      reason: 'Standard pricing', 
       savings: 0,
       marketPrice: null,
       marketUrl: generateDarazLink(productName),
-      marketSource: 'Daraz.pk',
-      exactMatch: false,
-      trend: 'stable'
+      useDynamicPricing: true
     };
   }
   
-  try {
-    const marketData = await fetchMarketPrice(productName, category);
-    const salesCount = salesData?.salesCount || product.salesCount || 0;
-    const stockLevel = stockData?.stock || product.stock || 0;
-    const isNewProduct = salesCount < 3;
-    
-    let totalDiscount = 0;
-    let reasons = [];
-    
-    if (marketData.marketPrice && marketData.marketPrice > 0) {
-      if (currentPrice > marketData.marketPrice) {
-        const diffPercent = ((currentPrice - marketData.marketPrice) / currentPrice) * 100;
-        const marketDiscount = Math.min(diffPercent + 5, 35);
-        totalDiscount += marketDiscount;
-        reasons.push(`💰 Market ${formatPKR(marketData.marketPrice)}`);
-      } else if (currentPrice < marketData.marketPrice * 0.85) {
-        totalDiscount -= 8;
-        reasons.push(`✅ Below market`);
-      }
-    }
-    
-    const hour = new Date().getHours();
-    if (hour >= 20 || hour <= 6) {
-      totalDiscount += 8;
-      reasons.push(`🌙 Late night deal`);
-    } else if (hour >= 10 && hour <= 12) {
-      totalDiscount += 5;
-      reasons.push(`☀️ Morning special`);
-    }
-    
-    if (isNewProduct) {
-      totalDiscount += 12;
-      reasons.push(`🎉 New product`);
-    }
-    
-    if (salesCount < 3 && !isNewProduct) {
-      totalDiscount += 10;
-      reasons.push(`📉 Low sales`);
-    } else if (salesCount < 10) {
-      totalDiscount += 5;
-      reasons.push(`📊 Improving`);
-    } else if (salesCount > 50) {
-      totalDiscount -= 5;
-      reasons.push(`🔥 Best seller`);
-    }
-    
-    if (stockLevel > 80) {
-      totalDiscount += 12;
-      reasons.push(`🏪 Stock clearance`);
-    } else if (stockLevel > 40) {
-      totalDiscount += 6;
-      reasons.push(`📦 Good stock`);
-    } else if (stockLevel < 5 && stockLevel > 0) {
-      totalDiscount -= 8;
-      reasons.push(`⚠️ Limited stock`);
-    }
-    
-    totalDiscount = Math.max(0, Math.min(Math.round(totalDiscount), 50));
-    const discountedPrice = Math.round(currentPrice * (1 - totalDiscount / 100));
-    const savings = Math.round(currentPrice - discountedPrice);
-    const reasonText = reasons.length > 0 ? reasons.slice(0, 2).join(', ') : '🤖 AI Best Price';
-    
-    return {
-      discount: totalDiscount,
-      discountedPrice: discountedPrice,
-      originalPrice: currentPrice,
-      reason: reasonText,
-      marketPrice: marketData.marketPrice,
-      marketSource: marketData.source,
-      marketUrl: marketData.url,
-      trend: marketData.trend,
-      savings: savings,
-      isNewProduct: isNewProduct,
-      exactMatch: marketData.exactMatch || false,
-      searchQuery: productName,
-      lastUpdated: marketData.lastUpdated
-    };
-  } catch (error) {
-    return {
-      discount: 0,
-      discountedPrice: currentPrice,
-      originalPrice: currentPrice,
-      reason: 'Standard price',
-      savings: 0,
-      marketPrice: null,
-      marketUrl: generateDarazLink(productName),
-      marketSource: 'Daraz.pk',
-      exactMatch: false,
-      trend: 'stable'
-    };
+  let totalDiscount = 0;
+  let reasons = [];
+  
+  // Get sales and stock from product or parameters
+  const salesCount = salesData?.salesCount || product.salesCount || 0;
+  const stockLevel = stockData?.stock || product.stock || 0;
+  
+  // 1. Sales-based discount (from actual data)
+  if (salesCount === 0) {
+    totalDiscount += 10;
+    reasons.push(`🆕 New product (no sales yet)`);
+  } else if (salesCount < 5) {
+    totalDiscount += 7;
+    reasons.push(`📉 Low sales (${salesCount} units)`);
+  } else if (salesCount < 15) {
+    totalDiscount += 3;
+    reasons.push(`📊 Building momentum (${salesCount} units)`);
   }
+  
+  // 2. Stock-based discount (from actual data)
+  if (stockLevel > 100) {
+    totalDiscount += 15;
+    reasons.push(`🏪 High stock clearance (${stockLevel} units)`);
+  } else if (stockLevel > 50) {
+    totalDiscount += 8;
+    reasons.push(`📦 Good stock available (${stockLevel} units)`);
+  } else if (stockLevel < 3 && stockLevel > 0) {
+    totalDiscount -= 5;
+    reasons.push(`⚡ Limited stock remaining (${stockLevel} units)`);
+  }
+  
+  // 3. Get market price from API/DB (no hardcoding)
+  const marketData = await fetchMarketPrice(productName, category);
+  
+  if (marketData.marketPrice && marketData.marketPrice > 0) {
+    if (currentPrice > marketData.marketPrice) {
+      const diffPercent = ((currentPrice - marketData.marketPrice) / currentPrice) * 100;
+      const marketDiscount = Math.min(Math.round(diffPercent + 3), 30);
+      totalDiscount += marketDiscount;
+      reasons.push(`💰 Matched to market (${formatPKR(marketData.marketPrice)})`);
+    }
+  }
+  
+  // Ensure discount is within reasonable bounds (0-50%)
+  totalDiscount = Math.max(0, Math.min(Math.round(totalDiscount), 50));
+  const discountedPrice = Math.round(currentPrice * (1 - totalDiscount / 100));
+  const savings = Math.round(currentPrice - discountedPrice);
+  const reasonText = reasons.length > 0 ? reasons.slice(0, 2).join(', ') : '🤖 AI optimized price';
+  
+  return {
+    discount: totalDiscount,
+    discountedPrice: discountedPrice,
+    originalPrice: currentPrice,
+    reason: reasonText,
+    marketPrice: marketData.marketPrice,
+    marketSource: marketData.source,
+    marketUrl: marketData.url,
+    trend: marketData.trend,
+    savings: savings,
+    useDynamicPricing: true
+  };
 };
 
-// ================= AI PURCHASE PATTERNS =================
+// ================= AI PURCHASE PATTERNS (FROM DATABASE ONLY) =================
 let purchasePatterns = {};
 let patternsLoaded = false;
 
@@ -289,7 +342,7 @@ export const loadPurchasePatterns = async () => {
       purchasePatterns[data.productId][data.relatedProductId] = data.count || 1;
     });
     patternsLoaded = true;
-    return { success: true };
+    return { success: true, patternCount: snapshot.size };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -319,17 +372,19 @@ export const recordPurchaseCombination = async (cart) => {
             relatedProductId: cart[j].id,
             relatedProductName: cart[j].name,
             count: 1, 
-            createdAt: new Date().toISOString() 
+            createdAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
           });
         }
         recorded++;
         
+        // Also record reverse relationship
         const reverseKey = `${cart[j].id}_${cart[i].id}`;
         const reverseRef = doc(db, 'purchasePatterns', reverseKey);
         const reverseDoc = await getDoc(reverseRef);
         
         if (reverseDoc.exists()) {
-          await updateDoc(reverseRef, { count: (reverseDoc.data().count || 0) + 1 });
+          await updateDoc(reverseRef, { count: (reverseDoc.data().count || 0) + 1, lastUpdated: new Date().toISOString() });
         } else {
           await setDoc(reverseRef, { 
             id: reverseKey, 
@@ -338,7 +393,8 @@ export const recordPurchaseCombination = async (cart) => {
             relatedProductId: cart[i].id,
             relatedProductName: cart[i].name,
             count: 1, 
-            createdAt: new Date().toISOString() 
+            createdAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
           });
         }
         recorded++;
@@ -352,12 +408,15 @@ export const recordPurchaseCombination = async (cart) => {
   return { success: true, recorded };
 };
 
+// Get suggestions with ranking from ACTUAL purchase data only
 export const getLearnedSuggestions = async (currentProductId, currentCart = [], allProducts = []) => {
   try {
     if (!patternsLoaded) await loadPurchasePatterns();
     
     const patterns = purchasePatterns[currentProductId] || {};
-    const sorted = Object.entries(patterns).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    
+    // Sort by frequency (highest first)
+    const sorted = Object.entries(patterns).sort((a, b) => b[1] - a[1]).slice(0, 5);
     
     const suggestions = [];
     const cartIds = currentCart.map(i => i.id);
@@ -368,13 +427,14 @@ export const getLearnedSuggestions = async (currentProductId, currentCart = [], 
         if (product) {
           suggestions.push({ 
             ...product, 
-            frequency: freq, 
-            reason: `Bought together ${freq} times`
+            frequency: freq,
+            reason: `🎯 Bought together ${freq} time${freq > 1 ? 's' : ''}`
           });
         }
       }
     }
     
+    // Return suggestions (empty array if none - NO HARDCODED FALLBACK)
     return suggestions;
   } catch (error) {
     return [];
@@ -383,6 +443,11 @@ export const getLearnedSuggestions = async (currentProductId, currentCart = [], 
 
 // ================= SHOPKEEPER NOTIFICATIONS =================
 let lastOrderId = null;
+let currentUserId = null;
+
+export const setCurrentUserForNotifications = (userId) => {
+  currentUserId = userId;
+};
 
 export const subscribeToNewOrders = (callback) => {
   try {
@@ -392,7 +457,8 @@ export const subscribeToNewOrders = (callback) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
           const orderData = { id: change.doc.id, ...change.doc.data() };
-          if (lastOrderId !== orderData.id) {
+          // Don't notify for orders created by current user (shopkeeper)
+          if (lastOrderId !== orderData.id && (!currentUserId || orderData.createdBy !== currentUserId)) {
             lastOrderId = orderData.id;
             callback(orderData);
           }
@@ -491,8 +557,27 @@ export const updateProductStock = async (productId, quantity) => {
 // ================= BILL FUNCTIONS =================
 export const saveBill = async (billData) => {
   try {
-    const billNumber = `INV-${Date.now()}`;
+    // Generate bill number from Firestore
+    const counterRef = doc(db, 'counters', 'billCounter');
+    let billNumber;
     
+    try {
+      const counterDoc = await getDoc(counterRef);
+      if (counterDoc.exists()) {
+        const currentCount = counterDoc.data().count || 0;
+        const newCount = currentCount + 1;
+        await updateDoc(counterRef, { count: newCount });
+        billNumber = `INV-${new Date().getFullYear()}${(new Date().getMonth()+1).toString().padStart(2,'0')}-${newCount.toString().padStart(5, '0')}`;
+      } else {
+        await setDoc(counterRef, { count: 1 });
+        billNumber = `INV-${new Date().getFullYear()}${(new Date().getMonth()+1).toString().padStart(2,'0')}-00001`;
+      }
+    } catch (error) {
+      // Fallback to timestamp if counter fails
+      billNumber = `INV-${Date.now()}`;
+    }
+    
+    // Update product sales and stock
     for (const item of billData.cart) {
       const productRef = doc(db, 'products', item.id);
       const productDoc = await getDoc(productRef);
@@ -510,6 +595,7 @@ export const saveBill = async (billData) => {
       ...billData,
       billNumber: billNumber,
       createdAt: new Date().toISOString(),
+      createdBy: getCurrentUser()?.uid || 'unknown',
       status: 'completed'
     });
     
@@ -579,8 +665,10 @@ export const registerUser = async (email, password, userData = {}) => {
       email, 
       ...userData, 
       role: 'shopkeeper', 
-      createdAt: new Date().toISOString() 
+      createdAt: new Date().toISOString(),
+      shopName: userData.shopName || 'My Store'
     });
+    setCurrentUserForNotifications(userCredential.user.uid);
     return { success: true, user: userCredential.user };
   } catch (error) {
     return { success: false, error: error.message };
@@ -590,6 +678,7 @@ export const registerUser = async (email, password, userData = {}) => {
 export const loginUser = async (email, password) => {
   try {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    setCurrentUserForNotifications(userCredential.user.uid);
     return { success: true, user: userCredential.user };
   } catch (error) {
     return { success: false, error: error.message };
@@ -598,6 +687,7 @@ export const loginUser = async (email, password) => {
 
 export const logoutUser = async () => {
   try {
+    setCurrentUserForNotifications(null);
     await signOut(auth);
     return { success: true };
   } catch (error) {
@@ -628,25 +718,36 @@ export const updateUserProfile = async (userId, profileData) => {
   }
 };
 
-// ================= COMPATIBILITY EXPORTS =================
-export const getAISuggestions = async (currentProductId, currentCart = []) => {
-  const products = await getProducts();
-  if (!products.success) return { success: false, suggestions: [] };
-  const suggestions = await getLearnedSuggestions(currentProductId, currentCart, products.products);
-  return { success: true, suggestions };
+// ================= CLEAR DATABASE FUNCTION (FOR TESTING) =================
+export const clearAllDatabaseData = async () => {
+  try {
+    const collections = ['products', 'bills', 'purchasePatterns', 'users'];
+    const batch = writeBatch(db);
+    
+    for (const collectionName of collections) {
+      const snapshot = await getDocs(collection(db, collectionName));
+      snapshot.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+    }
+    
+    await batch.commit();
+    
+    // Reset patterns cache
+    purchasePatterns = {};
+    patternsLoaded = false;
+    marketCache = {};
+    lastOrderId = null;
+    
+    return { success: true, message: 'All database data cleared successfully' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 };
 
-export const getLowSellingProducts = async () => {
-  const products = await getProducts();
-  if (!products.success) return { success: false, lowSelling: [] };
-  const lowSelling = products.products.filter(p => (p.salesCount || 0) < 5).slice(0, 5);
-  return { success: true, lowSelling };
-};
-
-// ✅ SIRF EK BAAR EXPORT - DUPLICATE HATAYA
+// ================= EXPORTS =================
 export { auth, db, onAuthStateChanged };
 
-// ✅ DEFAULT EXPORT - YAHAN SAB KUCH DALO
 export default {
   auth, 
   db, 
@@ -654,11 +755,16 @@ export default {
   formatPKR,
   generateDarazLink,
   fetchMarketPrice,
+  fetchRealMarketPriceFromAPI,
+  fetchMarketPriceFromDB,
+  setSerperApiKey,
+  getSerperApiKey,
   calculateAIDynamicDiscount,
   loadPurchasePatterns,
   recordPurchaseCombination,
   getLearnedSuggestions,
   subscribeToNewOrders,
+  setCurrentUserForNotifications,
   addProduct,
   getProducts,
   updateProduct,
@@ -668,12 +774,11 @@ export default {
   getBills,
   getTodaySales,
   getDashboardStats,
-  getAISuggestions,
-  getLowSellingProducts,
   registerUser,
   loginUser,
   logoutUser,
   getCurrentUser,
   getUserData,
-  updateUserProfile
+  updateUserProfile,
+  clearAllDatabaseData
 };

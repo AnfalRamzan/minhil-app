@@ -1,12 +1,24 @@
-// app/(tabs)/profile.js - WITHOUT expo-sharing (using Share API)
+// app/(tabs)/profile.js - API KEY FEATURE REMOVED
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, Text, TouchableOpacity, StyleSheet, Alert, 
-  Image, ScrollView, Switch, Modal, TextInput, ActivityIndicator, Share, Platform 
+  Image, ScrollView, Switch, Modal, TextInput, ActivityIndicator, 
+  Share, Platform, Linking
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { logoutUser, getTodaySales, getBills, getProducts, getCurrentUser, getUserData, updateUserProfile, getDashboardStats, formatPKR } from '../../config/firebase';
+import { 
+  logoutUser, 
+  getTodaySales, 
+  getBills, 
+  getProducts, 
+  getCurrentUser, 
+  getUserData, 
+  updateUserProfile, 
+  getDashboardStats, 
+  formatPKR,
+  clearAllDatabaseData
+} from '../../config/firebase';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
@@ -22,11 +34,6 @@ export default function Profile() {
   const [userEmail, setUserEmail] = useState('');
   const [editShopModal, setEditShopModal] = useState(false);
   const [tempShopName, setTempShopName] = useState('');
-  const [editProfileModal, setEditProfileModal] = useState(false);
-  const [userName, setUserName] = useState('');
-  const [userPhone, setUserPhone] = useState('');
-  const [userAddress, setUserAddress] = useState('');
-  const [darkMode, setDarkMode] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
   const [showDataManagement, setShowDataManagement] = useState(false);
   const [showEditSettingsModal, setShowEditSettingsModal] = useState(false);
@@ -40,6 +47,8 @@ export default function Profile() {
   const [appVersion, setAppVersion] = useState('2.0.0');
   const [showExportModal, setShowExportModal] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [showClearDataConfirm, setShowClearDataConfirm] = useState(false);
+  const [clearingData, setClearingData] = useState(false);
 
   const languages = ['English', 'Urdu', 'Arabic'];
   const currencies = ['PKR', 'USD', 'EUR', 'GBP'];
@@ -92,17 +101,17 @@ export default function Profile() {
       const user = getCurrentUser();
       if (user) {
         setUserEmail(user.email);
-        setUserName(user.displayName || '');
         
-        const userData = await getUserData(user.uid);
-        if (userData.success && userData.userData) {
-          setUserName(userData.userData.name || user.displayName || '');
-          setUserPhone(userData.userData.phone || '');
-          setUserAddress(userData.userData.address || '');
+        let savedShopName = await AsyncStorage.getItem('shopName');
+        if (!savedShopName) {
+          const userData = await getUserData(user.uid);
+          if (userData.success && userData.userData?.shopName) {
+            savedShopName = userData.userData.shopName;
+          } else {
+            savedShopName = 'My Store';
+          }
         }
-        
-        const savedShopName = await AsyncStorage.getItem('shopName');
-        setShopName(savedShopName || 'My Store');
+        setShopName(savedShopName);
         
         const savedImage = await AsyncStorage.getItem('profileImage');
         if (savedImage) setProfileImage(savedImage);
@@ -115,12 +124,7 @@ export default function Profile() {
   const loadPreferences = async () => {
     try {
       const savedNotifications = await AsyncStorage.getItem('notifications');
-      const savedDarkMode = await AsyncStorage.getItem('darkMode');
-      
       if (savedNotifications !== null) setNotifications(savedNotifications === 'true');
-      if (savedDarkMode !== null) setDarkMode(savedDarkMode === 'true');
-      
-      applyTheme(savedDarkMode === 'true');
     } catch (error) {
       console.log('Load preferences error:', error);
     }
@@ -144,46 +148,20 @@ export default function Profile() {
     }
   };
 
-  const applyTheme = (isDark) => {
-    console.log('Theme applied:', isDark ? 'Dark Mode' : 'Light Mode');
-  };
-
   const saveShopName = async () => {
     if (tempShopName.trim()) {
       setShopName(tempShopName);
       await AsyncStorage.setItem('shopName', tempShopName);
+      
+      const user = getCurrentUser();
+      if (user) {
+        await updateUserProfile(user.uid, { shopName: tempShopName });
+      }
+      
       setEditShopModal(false);
       Alert.alert('Success', 'Shop name updated successfully!');
     } else {
       Alert.alert('Error', 'Please enter a shop name');
-    }
-  };
-
-  const saveUserProfile = async () => {
-    if (!userName.trim()) {
-      Alert.alert('Error', 'Please enter your name');
-      return;
-    }
-    
-    try {
-      const user = getCurrentUser();
-      if (user) {
-        const result = await updateUserProfile(user.uid, {
-          name: userName,
-          phone: userPhone,
-          address: userAddress,
-          updatedAt: new Date().toISOString()
-        });
-        
-        if (result.success) {
-          setEditProfileModal(false);
-          Alert.alert('Success', 'Profile updated successfully!');
-        } else {
-          Alert.alert('Error', result.error);
-        }
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Could not update profile');
     }
   };
 
@@ -240,13 +218,6 @@ export default function Profile() {
     }
   };
 
-  const toggleDarkMode = async (value) => {
-    setDarkMode(value);
-    await AsyncStorage.setItem('darkMode', value.toString());
-    applyTheme(value);
-    Alert.alert('🎨 Theme Updated', value ? 'Dark mode enabled' : 'Light mode enabled');
-  };
-
   const saveAppSettings = async () => {
     try {
       await AsyncStorage.setItem('taxRate', taxRate);
@@ -261,17 +232,20 @@ export default function Profile() {
     }
   };
 
-  // ✅ EXPORT TO CSV AND SHARE using React Native Share API
   const exportToCSV = async () => {
     setExporting(true);
     try {
       const billsResult = await getBills();
       const productsResult = await getProducts();
       
-      // Create CSV content
       let csvContent = '';
       
-      // Bills Sheet
+      csvContent += '=== BILLINGEASE EXPORT REPORT ===\n';
+      csvContent += `Export Date: ${new Date().toLocaleString()}\n`;
+      csvContent += `Shop Name: ${shopName}\n`;
+      csvContent += `Email: ${userEmail}\n`;
+      csvContent += '\n';
+      
       csvContent += '=== BILLS REPORT ===\n';
       csvContent += 'Bill No.,Date,Total Amount,Items Count\n';
       if (billsResult.success && billsResult.bills.length > 0) {
@@ -283,9 +257,8 @@ export default function Profile() {
         csvContent += 'No bills found\n';
       }
       
-      csvContent += '\n\n';
+      csvContent += '\n';
       
-      // Products Sheet
       csvContent += '=== PRODUCTS REPORT ===\n';
       csvContent += 'Product Name,Price (PKR),Stock,Category,Sales Count\n';
       if (productsResult.success && productsResult.products.length > 0) {
@@ -296,18 +269,14 @@ export default function Profile() {
         csvContent += 'No products found\n';
       }
       
-      csvContent += '\n\n';
+      csvContent += '\n';
       
-      // Summary
       csvContent += '=== SUMMARY ===\n';
       csvContent += `Total Bills,${stats.totalBills}\n`;
-      csvContent += `Total Revenue,${stats.totalRevenue}\n`;
+      csvContent += `Total Revenue,${formatPKR(stats.totalRevenue)}\n`;
       csvContent += `Total Products,${stats.totalProducts}\n`;
-      csvContent += `Today\'s Sales,${stats.todaySales}\n`;
-      csvContent += `Export Date,${new Date().toLocaleString()}\n`;
-      csvContent += `Shop Name,${shopName}\n`;
+      csvContent += `Today\'s Sales,${formatPKR(stats.todaySales)}\n`;
       
-      // Save file
       const fileName = `BillingEase_Export_${Date.now()}.csv`;
       const filePath = `${FileSystem.documentDirectory}${fileName}`;
       
@@ -315,7 +284,6 @@ export default function Profile() {
         encoding: FileSystem.EncodingType.UTF8,
       });
       
-      // Share file using React Native Share API
       await Share.share({
         title: 'BillingEase Export',
         message: 'Here is your exported data from BillingEase',
@@ -332,9 +300,26 @@ export default function Profile() {
   };
 
   const clearAllData = async () => {
+    setClearingData(true);
+    try {
+      const result = await clearAllDatabaseData();
+      if (result.success) {
+        setStats({ todaySales: 0, totalBills: 0, totalProducts: 0, totalRevenue: 0 });
+        Alert.alert('Success', 'All database data cleared successfully!\n\nAdd new products to get started.');
+      } else {
+        Alert.alert('Error', result.error);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Could not clear data');
+    }
+    setClearingData(false);
+    setShowClearDataConfirm(false);
+  };
+
+  const clearLocalData = async () => {
     Alert.alert(
       '⚠️ Clear Local Data',
-      'This will clear all local settings. Cloud data will remain safe.\n\nAre you sure?',
+      'This will clear all local settings (notifications, theme, etc.). Cloud data will remain safe.\n\nAre you sure?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -345,7 +330,6 @@ export default function Profile() {
             setProfileImage(null);
             setShopName('My Store');
             setNotifications(true);
-            setDarkMode(false);
             setTaxRate('5');
             setCurrency('PKR');
             setLanguage('English');
@@ -358,11 +342,6 @@ export default function Profile() {
     );
   };
 
-  const formatPrice = (amount) => {
-    const symbol = currency === 'PKR' ? '₨' : currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '£';
-    return `${symbol} ${amount?.toLocaleString() || 0}`;
-  };
-
   if (loading) {
     return (
       <View style={styles.centerContainer}>
@@ -373,9 +352,9 @@ export default function Profile() {
   }
 
   return (
-    <ScrollView style={[styles.container, darkMode && styles.darkContainer]} showsVerticalScrollIndicator={false}>
+    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* Header Section */}
-      <View style={[styles.header, darkMode && styles.darkHeader]}>
+      <View style={styles.header}>
         <TouchableOpacity style={styles.imageContainer} onPress={pickImage}>
           {profileImage ? (
             <Image source={{ uri: profileImage }} style={styles.profileImage} />
@@ -389,7 +368,7 @@ export default function Profile() {
           </View>
         </TouchableOpacity>
         
-        <Text style={[styles.shopName, darkMode && styles.darkText]}>{shopName}</Text>
+        <Text style={styles.shopName}>{shopName}</Text>
         
         <TouchableOpacity style={styles.editShopButton} onPress={() => {
           setTempShopName(shopName);
@@ -398,14 +377,10 @@ export default function Profile() {
           <Text style={styles.editShopText}>✏️ Edit Shop Name</Text>
         </TouchableOpacity>
         
-        <TouchableOpacity style={styles.editProfileButton} onPress={() => setEditProfileModal(true)}>
-          <Text style={styles.editProfileText}>👤 Edit Profile</Text>
-        </TouchableOpacity>
-        
         <Text style={styles.userEmail}>{userEmail}</Text>
       </View>
 
-      {/* Stats Section - PKR format */}
+      {/* Stats Section */}
       <View style={styles.statsContainer}>
         <View style={styles.statCard}>
           <Text style={styles.statNumber}>{formatPKR(stats.todaySales)}</Text>
@@ -422,14 +397,14 @@ export default function Profile() {
       </View>
 
       {/* Preferences Section */}
-      <View style={[styles.menuSection, darkMode && styles.darkMenuSection]}>
-        <Text style={[styles.sectionTitle, darkMode && styles.darkSectionTitle]}>⚙️ Preferences</Text>
+      <View style={styles.menuSection}>
+        <Text style={styles.sectionTitle}>⚙️ Preferences</Text>
         
         <View style={styles.menuItem}>
           <View style={styles.menuIcon}>
             <Text style={styles.menuIconText}>🔔</Text>
           </View>
-          <Text style={[styles.menuText, darkMode && styles.darkMenuText]}>Notifications</Text>
+          <Text style={styles.menuText}>Notifications</Text>
           <Switch
             value={notifications}
             onValueChange={toggleNotifications}
@@ -437,29 +412,17 @@ export default function Profile() {
             thumbColor={notifications ? '#fff' : '#f4f3f4'}
           />
         </View>
-
-        <View style={styles.menuItem}>
-          <View style={styles.menuIcon}>
-            <Text style={styles.menuIconText}>🌙</Text>
-          </View>
-          <Text style={[styles.menuText, darkMode && styles.darkMenuText]}>Dark Mode</Text>
-          <Switch
-            value={darkMode}
-            onValueChange={toggleDarkMode}
-            trackColor={{ false: '#ddd', true: '#1a73e8' }}
-          />
-        </View>
       </View>
 
       {/* General Section */}
-      <View style={[styles.menuSection, darkMode && styles.darkMenuSection]}>
-        <Text style={[styles.sectionTitle, darkMode && styles.darkSectionTitle]}>📱 General</Text>
+      <View style={styles.menuSection}>
+        <Text style={styles.sectionTitle}>📱 General</Text>
         
         <TouchableOpacity style={styles.menuItem} onPress={() => setShowEditSettingsModal(true)}>
           <View style={styles.menuIcon}>
             <Text style={styles.menuIconText}>⚙️</Text>
           </View>
-          <Text style={[styles.menuText, darkMode && styles.darkMenuText]}>App Settings</Text>
+          <Text style={styles.menuText}>App Settings</Text>
           <Text style={styles.menuArrow}>→</Text>
         </TouchableOpacity>
 
@@ -467,7 +430,7 @@ export default function Profile() {
           <View style={styles.menuIcon}>
             <Text style={styles.menuIconText}>🔒</Text>
           </View>
-          <Text style={[styles.menuText, darkMode && styles.darkMenuText]}>Security</Text>
+          <Text style={styles.menuText}>Security</Text>
           <Text style={styles.menuArrow}>→</Text>
         </TouchableOpacity>
 
@@ -475,7 +438,7 @@ export default function Profile() {
           <View style={styles.menuIcon}>
             <Text style={styles.menuIconText}>📊</Text>
           </View>
-          <Text style={[styles.menuText, darkMode && styles.darkMenuText]}>Data Management</Text>
+          <Text style={styles.menuText}>Data Management</Text>
           <Text style={styles.menuArrow}>→</Text>
         </TouchableOpacity>
 
@@ -483,7 +446,7 @@ export default function Profile() {
           <View style={styles.menuIcon}>
             <Text style={styles.menuIconText}>ℹ️</Text>
           </View>
-          <Text style={[styles.menuText, darkMode && styles.darkMenuText]}>About</Text>
+          <Text style={styles.menuText}>About</Text>
           <Text style={styles.menuArrow}>→</Text>
         </TouchableOpacity>
 
@@ -501,10 +464,10 @@ export default function Profile() {
       {/* Edit Shop Name Modal */}
       <Modal visible={editShopModal} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>Edit Shop Name</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Edit Shop Name</Text>
             <TextInput
-              style={[styles.modalInput, darkMode && styles.darkModalInput]}
+              style={styles.modalInput}
               placeholder="Enter shop name"
               placeholderTextColor="#aaa"
               value={tempShopName}
@@ -524,83 +487,39 @@ export default function Profile() {
         </View>
       </Modal>
 
-      {/* Edit Profile Modal */}
-      <Modal visible={editProfileModal} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>Edit Profile</Text>
-            
-            <TextInput
-              style={[styles.modalInput, darkMode && styles.darkModalInput]}
-              placeholder="Full Name"
-              placeholderTextColor="#aaa"
-              value={userName}
-              onChangeText={setUserName}
-            />
-            
-            <TextInput
-              style={[styles.modalInput, darkMode && styles.darkModalInput]}
-              placeholder="Phone Number"
-              placeholderTextColor="#aaa"
-              value={userPhone}
-              onChangeText={setUserPhone}
-              keyboardType="phone-pad"
-            />
-            
-            <TextInput
-              style={[styles.modalInput, styles.textArea, darkMode && styles.darkModalInput]}
-              placeholder="Shop Address"
-              placeholderTextColor="#aaa"
-              value={userAddress}
-              onChangeText={setUserAddress}
-              multiline={true}
-              numberOfLines={3}
-            />
-            
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.saveBtn} onPress={saveUserProfile}>
-                <Text style={styles.saveBtnText}>Save Changes</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditProfileModal(false)}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       {/* App Settings Modal */}
       <Modal visible={showEditSettingsModal} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent, { maxHeight: '85%' }]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>App Settings</Text>
+          <View style={[styles.modalContent, { maxHeight: '85%' }]}>
+            <Text style={styles.modalTitle}>App Settings</Text>
             
             <TouchableOpacity style={styles.settingItem} onPress={() => {
               Alert.alert('Tax Rate', 'Set GST percentage', [
                 { text: 'Cancel', style: 'cancel' },
+                { text: '0%', onPress: () => setTaxRate('0') },
                 { text: '5%', onPress: () => setTaxRate('5') },
                 { text: '10%', onPress: () => setTaxRate('10') },
                 { text: '15%', onPress: () => setTaxRate('15') },
                 { text: '18%', onPress: () => setTaxRate('18') },
               ]);
             }}>
-              <Text style={[styles.settingLabel, darkMode && styles.darkMenuText]}>Tax Rate (GST)</Text>
-              <Text style={[styles.settingValue, darkMode && styles.darkMenuText]}>{taxRate}%</Text>
+              <Text style={styles.settingLabel}>Tax Rate (GST)</Text>
+              <Text style={styles.settingValue}>{taxRate}%</Text>
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.settingItem} onPress={() => setShowCurrencyModal(true)}>
-              <Text style={[styles.settingLabel, darkMode && styles.darkMenuText]}>Currency</Text>
-              <Text style={[styles.settingValue, darkMode && styles.darkMenuText]}>{currency}</Text>
+              <Text style={styles.settingLabel}>Currency</Text>
+              <Text style={styles.settingValue}>{currency}</Text>
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.settingItem} onPress={() => setShowLanguageModal(true)}>
-              <Text style={[styles.settingLabel, darkMode && styles.darkMenuText]}>Language</Text>
-              <Text style={[styles.settingValue, darkMode && styles.darkMenuText]}>{language}</Text>
+              <Text style={styles.settingLabel}>Language</Text>
+              <Text style={styles.settingValue}>{language}</Text>
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.settingItem} onPress={() => setShowDateFormatModal(true)}>
-              <Text style={[styles.settingLabel, darkMode && styles.darkMenuText]}>Date Format</Text>
-              <Text style={[styles.settingValue, darkMode && styles.darkMenuText]}>{dateFormat}</Text>
+              <Text style={styles.settingLabel}>Date Format</Text>
+              <Text style={styles.settingValue}>{dateFormat}</Text>
             </TouchableOpacity>
             
             <View style={styles.modalButtons}>
@@ -618,8 +537,8 @@ export default function Profile() {
       {/* Currency Modal */}
       <Modal visible={showCurrencyModal} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>Select Currency</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Currency</Text>
             {currencies.map((curr) => (
               <TouchableOpacity
                 key={curr}
@@ -629,7 +548,7 @@ export default function Profile() {
                   setShowCurrencyModal(false);
                 }}
               >
-                <Text style={[styles.optionText, darkMode && styles.darkMenuText]}>{curr}</Text>
+                <Text style={styles.optionText}>{curr}</Text>
                 {currency === curr && <Text style={styles.checkMark}>✓</Text>}
               </TouchableOpacity>
             ))}
@@ -640,8 +559,8 @@ export default function Profile() {
       {/* Language Modal */}
       <Modal visible={showLanguageModal} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>Select Language</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Language</Text>
             {languages.map((lang) => (
               <TouchableOpacity
                 key={lang}
@@ -652,7 +571,7 @@ export default function Profile() {
                   Alert.alert('Language Changed', `App language will change to ${lang} on restart`);
                 }}
               >
-                <Text style={[styles.optionText, darkMode && styles.darkMenuText]}>{lang}</Text>
+                <Text style={styles.optionText}>{lang}</Text>
                 {language === lang && <Text style={styles.checkMark}>✓</Text>}
               </TouchableOpacity>
             ))}
@@ -663,8 +582,8 @@ export default function Profile() {
       {/* Date Format Modal */}
       <Modal visible={showDateFormatModal} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>Select Date Format</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Date Format</Text>
             {dateFormats.map((format) => (
               <TouchableOpacity
                 key={format}
@@ -674,7 +593,7 @@ export default function Profile() {
                   setShowDateFormatModal(false);
                 }}
               >
-                <Text style={[styles.optionText, darkMode && styles.darkMenuText]}>{format}</Text>
+                <Text style={styles.optionText}>{format}</Text>
                 {dateFormat === format && <Text style={styles.checkMark}>✓</Text>}
               </TouchableOpacity>
             ))}
@@ -685,26 +604,31 @@ export default function Profile() {
       {/* Security Modal */}
       <Modal visible={showSecurity} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>🔒 Security</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>🔒 Security</Text>
             
             <View style={styles.settingItem}>
-              <Text style={[styles.settingLabel, darkMode && styles.darkMenuText]}>Biometric Login</Text>
-              <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'Biometric login coming soon')}>
+              <Text style={styles.settingLabel}>Biometric Login</Text>
+              <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'Biometric login coming in next update')}>
                 <Text style={[styles.settingValue, { color: '#1a73e8' }]}>Setup →</Text>
               </TouchableOpacity>
             </View>
             
             <View style={styles.settingItem}>
-              <Text style={[styles.settingLabel, darkMode && styles.darkMenuText]}>PIN Protection</Text>
-              <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'PIN protection coming soon')}>
+              <Text style={styles.settingLabel}>PIN Protection</Text>
+              <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'PIN protection coming in next update')}>
                 <Text style={[styles.settingValue, { color: '#1a73e8' }]}>Enable →</Text>
               </TouchableOpacity>
             </View>
             
             <View style={styles.settingItem}>
-              <Text style={[styles.settingLabel, darkMode && styles.darkMenuText]}>Data Encryption</Text>
-              <Text style={[styles.settingValue, darkMode && styles.darkMenuText]}>Enabled ✓</Text>
+              <Text style={styles.settingLabel}>Data Encryption</Text>
+              <Text style={[styles.settingValue, { color: '#34a853' }]}>Enabled ✓</Text>
+            </View>
+            
+            <View style={styles.settingItem}>
+              <Text style={styles.settingLabel}>Firebase Security</Text>
+              <Text style={[styles.settingValue, { color: '#34a853' }]}>Active ✓</Text>
             </View>
             
             <TouchableOpacity style={styles.closeButton} onPress={() => setShowSecurity(false)}>
@@ -717,17 +641,22 @@ export default function Profile() {
       {/* Data Management Modal */}
       <Modal visible={showDataManagement} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>📊 Data Management</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>📊 Data Management</Text>
             
             <TouchableOpacity style={styles.dataOption} onPress={() => setShowExportModal(true)}>
-              <Text style={styles.dataOptionText}>📤 Export Data to Excel (CSV)</Text>
-              <Text style={styles.dataOptionSub}>Export bills and products to CSV file</Text>
+              <Text style={styles.dataOptionText}>📤 Export Data to CSV</Text>
+              <Text style={styles.dataOptionSub}>Export bills, products, and summary</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity style={styles.dataOption} onPress={clearAllData}>
-              <Text style={[styles.dataOptionText, { color: '#dc3545' }]}>🗑️ Clear Local Data</Text>
-              <Text style={styles.dataOptionSub}>Remove all cached settings</Text>
+            <TouchableOpacity style={styles.dataOption} onPress={() => setShowClearDataConfirm(true)}>
+              <Text style={[styles.dataOptionText, { color: '#dc3545' }]}>🗑️ Clear All Database Data</Text>
+              <Text style={styles.dataOptionSub}>Delete all products, bills, and patterns (irreversible)</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.dataOption} onPress={clearLocalData}>
+              <Text style={[styles.dataOptionText, { color: '#f39c12' }]}>🗑️ Clear Local Settings Only</Text>
+              <Text style={styles.dataOptionSub}>Keep products/bills, reset app preferences</Text>
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.closeButton} onPress={() => setShowDataManagement(false)}>
@@ -737,16 +666,49 @@ export default function Profile() {
         </View>
       </Modal>
 
+      {/* Clear Data Confirmation Modal */}
+      <Modal visible={showClearDataConfirm} transparent={true} animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: '#fff3e0' }]}>
+            <Text style={[styles.modalTitle, { color: '#dc3545' }]}>⚠️ Warning!</Text>
+            <Text style={styles.clearWarningText}>
+              This will permanently delete:
+            </Text>
+            <Text style={styles.clearWarningList}>
+              • All products in database\n
+              • All bill history\n
+              • All purchase patterns (AI learning data)
+            </Text>
+            <Text style={styles.clearWarningConfirm}>
+              This action CANNOT be undone!
+            </Text>
+            
+            {clearingData ? (
+              <ActivityIndicator size="large" color="#dc3545" style={{ marginVertical: 20 }} />
+            ) : (
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#dc3545' }]} onPress={clearAllData}>
+                  <Text style={styles.saveBtnText}>Yes, Delete All</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.cancelBtn, { backgroundColor: '#666' }]} onPress={() => setShowClearDataConfirm(false)}>
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {/* Export Modal */}
       <Modal visible={showExportModal} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>📤 Export Data</Text>
-            <Text style={styles.exportText}>Export your data as Excel (CSV) file</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>📤 Export Data</Text>
+            <Text style={styles.exportText}>Export your data as CSV file</Text>
             
             <TouchableOpacity style={styles.exportOption} onPress={exportToCSV} disabled={exporting}>
               <Text style={styles.exportOptionText}>
-                {exporting ? '⏳ Exporting...' : '📄 Export as CSV (Excel)'}
+                {exporting ? '⏳ Exporting...' : '📄 Export as CSV'}
               </Text>
             </TouchableOpacity>
             
@@ -760,12 +722,12 @@ export default function Profile() {
       {/* About Modal */}
       <Modal visible={showAbout} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, darkMode && styles.darkModalContent]}>
-            <Text style={[styles.modalTitle, darkMode && styles.darkText]}>About BillingEase</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>About BillingEase</Text>
             <View style={styles.aboutLogo}>
               <Text style={styles.aboutLogoIcon}>🧠</Text>
             </View>
-            <Text style={[styles.aboutName, darkMode && styles.darkText]}>BillingEase</Text>
+            <Text style={styles.aboutName}>BillingEase</Text>
             <Text style={styles.aboutVersion}>Version {appVersion}</Text>
             <Text style={styles.aboutDescription}>
               AI Powered Smart Billing System for Modern Retail Stores
@@ -792,7 +754,6 @@ export default function Profile() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f7fa' },
-  darkContainer: { backgroundColor: '#1a1a2e' },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f5f7fa' },
   loadingText: { marginTop: 12, fontSize: 14, color: '#666' },
   
@@ -809,7 +770,6 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 5,
   },
-  darkHeader: { backgroundColor: '#0f4c81' },
   imageContainer: { position: 'relative', marginBottom: 12 },
   profileImage: { width: 100, height: 100, borderRadius: 50, borderWidth: 3, borderColor: '#fff' },
   profileImagePlaceholder: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#fff' },
@@ -819,8 +779,6 @@ const styles = StyleSheet.create({
   shopName: { fontSize: 24, fontWeight: 'bold', color: '#fff', marginTop: 8 },
   editShopButton: { marginTop: 6, paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 20 },
   editShopText: { fontSize: 12, color: '#fff' },
-  editProfileButton: { marginTop: 8, paddingHorizontal: 16, paddingVertical: 6, backgroundColor: '#fff', borderRadius: 20 },
-  editProfileText: { fontSize: 12, color: '#1a73e8', fontWeight: '600' },
   userEmail: { fontSize: 12, color: '#e8f0fe', marginTop: 8 },
   
   statsContainer: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 20, marginTop: -25, marginBottom: 20 },
@@ -829,26 +787,19 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 11, color: '#666', marginTop: 4 },
   
   menuSection: { backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 16, paddingHorizontal: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2, marginBottom: 20 },
-  darkMenuSection: { backgroundColor: '#16213e' },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#1a73e8', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  darkSectionTitle: { color: '#4fc3f7', borderBottomColor: '#333' },
   menuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   menuIcon: { width: 40 },
   menuIconText: { fontSize: 22 },
   menuText: { flex: 1, fontSize: 16, color: '#333', marginLeft: 8 },
-  darkMenuText: { color: '#e0e0e0' },
   menuArrow: { fontSize: 16, color: '#ccc' },
   logoutItem: { borderBottomWidth: 0 },
   logoutText: { color: '#dc3545' },
-  darkText: { color: '#fff' },
   
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 24, width: '90%' },
-  darkModalContent: { backgroundColor: '#1a1a2e' },
   modalTitle: { fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 20, color: '#1a73e8' },
   modalInput: { borderWidth: 1.5, borderColor: '#e0e0e0', borderRadius: 12, padding: 14, fontSize: 16, marginBottom: 15, backgroundColor: '#f8f9fa' },
-  darkModalInput: { backgroundColor: '#2a2a3e', borderColor: '#444', color: '#fff' },
-  textArea: { height: 80, textAlignVertical: 'top' },
   modalButtons: { flexDirection: 'row', gap: 12, marginTop: 10 },
   saveBtn: { flex: 1, backgroundColor: '#34a853', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
   saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
@@ -865,6 +816,10 @@ const styles = StyleSheet.create({
   dataOption: { paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#eee' },
   dataOptionText: { fontSize: 16, color: '#1a73e8', fontWeight: '500' },
   dataOptionSub: { fontSize: 11, color: '#999', marginTop: 4 },
+  
+  clearWarningText: { fontSize: 14, color: '#333', marginBottom: 12 },
+  clearWarningList: { fontSize: 13, color: '#666', marginBottom: 12, lineHeight: 20 },
+  clearWarningConfirm: { fontSize: 14, fontWeight: 'bold', color: '#dc3545', marginBottom: 20, textAlign: 'center' },
   
   exportText: { fontSize: 14, color: '#666', textAlign: 'center', marginBottom: 20 },
   exportOption: { backgroundColor: '#e8f0fe', padding: 16, borderRadius: 12, marginBottom: 12, alignItems: 'center' },

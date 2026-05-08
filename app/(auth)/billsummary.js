@@ -1,4 +1,4 @@
-// app/billsummary.js - COMPLETE WITH DIRECT DARAZ LINK FUNCTION
+// app/billsummary.js - WITH RANKING DISPLAY FIX
 
 import React, { useState, useEffect } from 'react';
 import { 
@@ -6,14 +6,7 @@ import {
   Alert, ScrollView, ActivityIndicator, Linking 
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { saveBill, formatPKR } from '../../config/firebase';
-
-// ✅ DIRECT DARAZ LINK GENERATOR FUNCTION (YAHI PE DEFINE KARO)
-const generateDarazLink = (productName) => {
-  if (!productName) return 'https://www.daraz.pk/';
-  const searchQuery = encodeURIComponent(productName.trim().toLowerCase());
-  return `https://www.daraz.pk/catalog/?q=${searchQuery}&spm=a2a0e.tm80335411.search.1`;
-};
+import { saveBill, formatPKR, generateDarazLink } from '../../config/firebase';
 
 export default function BillSummary() {
   const router = useRouter();
@@ -123,7 +116,6 @@ export default function BillSummary() {
 
   const openDarazLink = (url, productName) => {
     const finalUrl = url || generateDarazLink(productName);
-    console.log('Opening Daraz URL:', finalUrl);  // ✅ DEBUG: Check if URL is generated
     Linking.openURL(finalUrl).catch(() => {
       Alert.alert('Error', `Cannot open Daraz for ${productName}`);
     });
@@ -176,7 +168,6 @@ export default function BillSummary() {
               </Text>
             )}
             
-            {/* ✅ DARAZ COMPARE BUTTON */}
             <TouchableOpacity 
               style={styles.darazButton}
               onPress={() => openDarazLink(item.marketUrl, item.name)}
