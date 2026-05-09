@@ -1,6 +1,8 @@
+// app/(tabs)/products.js - COMPLETE WITH ROLE-BASED ACCESS
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Modal, RefreshControl, ActivityIndicator } from 'react-native';
-import { getProducts, addProduct, updateProduct, deleteProduct } from '../../config/firebase';
+import { getProducts, addProduct, updateProduct, deleteProduct, getUserRole } from '../../config/firebase';
 import { useFocusEffect } from '@react-navigation/native';
 
 export default function Products() {
@@ -13,24 +15,27 @@ export default function Products() {
   const [stock, setStock] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [userRole, setUserRole] = useState('customer');
 
   useFocusEffect(
     useCallback(() => {
       loadProducts();
-      return () => {};
+      loadUserRole();
     }, [])
   );
 
-  useEffect(() => {
-    loadProducts();
-  }, []);
+  const loadUserRole = async () => {
+    const result = await getUserRole();
+    if (result.success) {
+      setUserRole(result.role);
+    }
+  };
 
   const loadProducts = async () => {
     setLoading(true);
     const result = await getProducts();
     if (result.success) {
       setProducts(result.products);
-      console.log('Products loaded:', result.products.length);
     } else {
       Alert.alert('Error', result.error);
     }
@@ -151,14 +156,18 @@ export default function Products() {
           <Text style={styles.productSales}>📊 Sales: {item.salesCount || 0}</Text>
         </View>
       </View>
-      <View style={styles.productActions}>
-        <TouchableOpacity style={styles.editBtn} onPress={() => editProduct(item)}>
-          <Text style={styles.editBtnText}>✏️ Edit</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.deleteBtn} onPress={() => deleteProductItem(item.id)}>
-          <Text style={styles.deleteBtnText}>🗑️ Delete</Text>
-        </TouchableOpacity>
-      </View>
+      
+      {/* Edit/Delete buttons - ONLY for shopkeeper */}
+      {userRole === 'shopkeeper' && (
+        <View style={styles.productActions}>
+          <TouchableOpacity style={styles.editBtn} onPress={() => editProduct(item)}>
+            <Text style={styles.editBtnText}>✏️ Edit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.deleteBtn} onPress={() => deleteProductItem(item.id)}>
+            <Text style={styles.deleteBtnText}>🗑️ Delete</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 
@@ -175,15 +184,23 @@ export default function Products() {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>📦 Products</Text>
+        <View style={styles.roleBadge}>
+          <Text style={styles.roleBadgeText}>
+            {userRole === 'shopkeeper' ? '🏪 Manage Products' : '🛒 View Only'}
+          </Text>
+        </View>
         <Text style={styles.productCount}>{products.length} products</Text>
       </View>
       
-      <TouchableOpacity style={styles.addButton} onPress={() => {
-        resetForm();
-        setModalVisible(true);
-      }}>
-        <Text style={styles.addButtonText}>➕ Add New Product</Text>
-      </TouchableOpacity>
+      {/* Add Product button - ONLY for shopkeeper */}
+      {userRole === 'shopkeeper' && (
+        <TouchableOpacity style={styles.addButton} onPress={() => {
+          resetForm();
+          setModalVisible(true);
+        }}>
+          <Text style={styles.addButtonText}>➕ Add New Product</Text>
+        </TouchableOpacity>
+      )}
 
       <FlatList
         data={products}
@@ -201,63 +218,66 @@ export default function Products() {
         showsVerticalScrollIndicator={false}
       />
 
-      <Modal visible={modalVisible} animationType="slide" transparent={true}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>
-              {editingProduct ? '✏️ Edit Product' : '➕ Add New Product'}
-            </Text>
-            
-            <TextInput 
-              style={styles.modalInput} 
-              placeholder="Product Name" 
-              placeholderTextColor="#aaa"
-              value={name} 
-              onChangeText={setName} 
-            />
-            
-            <TextInput 
-              style={styles.modalInput} 
-              placeholder="Price (PKR)" 
-              placeholderTextColor="#aaa"
-              value={price} 
-              onChangeText={setPrice} 
-              keyboardType="numeric" 
-            />
-            
-            <TextInput 
-              style={styles.modalInput} 
-              placeholder="Category" 
-              placeholderTextColor="#aaa"
-              value={category} 
-              onChangeText={setCategory} 
-            />
-            
-            <TextInput 
-              style={styles.modalInput} 
-              placeholder="Stock Quantity" 
-              placeholderTextColor="#aaa"
-              value={stock} 
-              onChangeText={setStock} 
-              keyboardType="numeric" 
-            />
-            
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.saveBtn} onPress={saveProduct} disabled={loading}>
-                <Text style={styles.saveBtnText}>
-                  {loading ? 'Saving...' : (editingProduct ? 'Update' : 'Save')}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => {
-                setModalVisible(false);
-                resetForm();
-              }}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
+      {/* Add/Edit Product Modal - ONLY for shopkeeper */}
+      {userRole === 'shopkeeper' && (
+        <Modal visible={modalVisible} animationType="slide" transparent={true}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>
+                {editingProduct ? '✏️ Edit Product' : '➕ Add New Product'}
+              </Text>
+              
+              <TextInput 
+                style={styles.modalInput} 
+                placeholder="Product Name" 
+                placeholderTextColor="#aaa"
+                value={name} 
+                onChangeText={setName} 
+              />
+              
+              <TextInput 
+                style={styles.modalInput} 
+                placeholder="Price (PKR)" 
+                placeholderTextColor="#aaa"
+                value={price} 
+                onChangeText={setPrice} 
+                keyboardType="numeric" 
+              />
+              
+              <TextInput 
+                style={styles.modalInput} 
+                placeholder="Category" 
+                placeholderTextColor="#aaa"
+                value={category} 
+                onChangeText={setCategory} 
+              />
+              
+              <TextInput 
+                style={styles.modalInput} 
+                placeholder="Stock Quantity" 
+                placeholderTextColor="#aaa"
+                value={stock} 
+                onChangeText={setStock} 
+                keyboardType="numeric" 
+              />
+              
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={styles.saveBtn} onPress={saveProduct} disabled={loading}>
+                  <Text style={styles.saveBtnText}>
+                    {loading ? 'Saving...' : (editingProduct ? 'Update' : 'Save')}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.cancelBtn} onPress={() => {
+                  setModalVisible(false);
+                  resetForm();
+                }}>
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
     </View>
   );
 }
@@ -268,6 +288,8 @@ const styles = StyleSheet.create({
   loadingText: { marginTop: 10, color: '#666' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e0e0e0' },
   headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#1a73e8' },
+  roleBadge: { backgroundColor: '#e8f0fe', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 15 },
+  roleBadgeText: { fontSize: 10, color: '#1a73e8', fontWeight: '500' },
   productCount: { fontSize: 14, color: '#666', backgroundColor: '#f0f0f0', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20 },
   addButton: { backgroundColor: '#1a73e8', padding: 16, margin: 15, borderRadius: 14, alignItems: 'center', shadowColor: '#1a73e8', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 4 },
   addButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },

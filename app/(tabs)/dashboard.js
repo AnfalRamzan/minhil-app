@@ -1,4 +1,4 @@
-// app/(tabs)/dashboard.js
+// app/(tabs)/dashboard.js - WITH ROLE-BASED ACCESS & COMPLETED ORDER STATS
 
 import React, {
   useState,
@@ -24,7 +24,11 @@ import {
   getTodaySales,
   getBills,
   getProducts,
+  getCustomerStats,
   formatPKR,
+  getUserRole,
+  getCurrentUser,
+  getDashboardStats,
 } from '../../config/firebase';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -38,97 +42,88 @@ export default function Dashboard() {
     totalProducts: 0,
   });
 
-  const [totalRevenue, setTotalRevenue] =
-    useState(0);
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [refreshing, setRefreshing] =
-    useState(false);
-
-  const [isDarkMode, setIsDarkMode] =
-    useState(false);
+  const [totalRevenue, setTotalRevenue] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [userRole, setUserRole] = useState('customer');
+  const [customerStats, setCustomerStats] = useState({
+    myOrders: 0,
+    myTotalSpent: 0,
+    myItems: 0,
+  });
+  const [pendingOrdersCount, setPendingOrdersCount] = useState(0);
 
   // ================= LOAD SCREEN =================
 
   useFocusEffect(
     useCallback(() => {
       loadTheme();
+      loadUserRole();
       loadDashboardData();
     }, [])
   );
+
+  // ================= LOAD USER ROLE =================
+
+  const loadUserRole = async () => {
+    const result = await getUserRole();
+    if (result.success) {
+      setUserRole(result.role);
+    }
+  };
 
   // ================= LOAD THEME =================
 
   const loadTheme = async () => {
     try {
-      const savedTheme =
-        await AsyncStorage.getItem(
-          'isDarkMode'
-        );
-
+      const savedTheme = await AsyncStorage.getItem('isDarkMode');
       setIsDarkMode(savedTheme === 'true');
     } catch (error) {
-      console.log(
-        'Theme load error:',
-        error
-      );
+      console.log('Theme load error:', error);
     }
   };
 
-  // ================= LOAD DATA =================
+  // ================= LOAD DATA (Role Based) =================
 
   const loadDashboardData = async () => {
     try {
       setLoading(true);
+      const currentUser = getCurrentUser();
 
-      const salesResult =
-        await getTodaySales();
-
-      const billsResult =
-        await getBills();
-
-      const productsResult =
-        await getProducts();
-
-      // Total Revenue
-      let revenue = 0;
-
-      if (
-        billsResult.success &&
-        billsResult.bills?.length > 0
-      ) {
-        revenue = billsResult.bills.reduce(
-          (sum, bill) =>
-            sum + (bill.total || 0),
-          0
-        );
+      if (userRole === 'shopkeeper') {
+        // SHOPKEEPER - Full stats
+        const dashboardStats = await getDashboardStats();
+        
+        setStats({
+          todaySales: dashboardStats.success ? dashboardStats.stats.todaySales : 0,
+          totalBills: dashboardStats.success ? dashboardStats.stats.totalBills : 0,
+          totalProducts: dashboardStats.success ? dashboardStats.stats.totalProducts : 0,
+        });
+        setTotalRevenue(dashboardStats.success ? dashboardStats.stats.totalRevenue : 0);
+        setPendingOrdersCount(dashboardStats.success ? dashboardStats.stats.pendingBills : 0);
+      } else {
+        // CUSTOMER - Only completed orders stats
+        const customerStatsResult = await getCustomerStats();
+        
+        if (customerStatsResult.success) {
+          setCustomerStats({
+            myOrders: customerStatsResult.stats.totalOrders,
+            myTotalSpent: customerStatsResult.stats.totalSpent,
+            myItems: customerStatsResult.stats.totalItems,
+          });
+        }
+        
+        // Get product count for customer
+        const productsResult = await getProducts();
+        setStats({
+          todaySales: 0,
+          totalBills: 0,
+          totalProducts: productsResult.success ? productsResult.products.length : 0,
+        });
       }
-
-      setStats({
-        todaySales:
-          salesResult.success
-            ? salesResult.total
-            : 0,
-
-        totalBills:
-          billsResult.success
-            ? billsResult.bills.length
-            : 0,
-
-        totalProducts:
-          productsResult.success
-            ? productsResult.products.length
-            : 0,
-      });
-
-      setTotalRevenue(revenue);
     } catch (error) {
-      console.log(
-        'Dashboard error:',
-        error
-      );
+      console.log('Dashboard error:', error);
     } finally {
       setLoading(false);
     }
@@ -139,13 +134,9 @@ export default function Dashboard() {
   const onRefresh = async () => {
     try {
       setRefreshing(true);
-
       await loadDashboardData();
     } catch (error) {
-      console.log(
-        'Refresh error:',
-        error
-      );
+      console.log('Refresh error:', error);
     } finally {
       setRefreshing(false);
     }
@@ -159,28 +150,12 @@ export default function Dashboard() {
         style={[
           styles.centerContainer,
           {
-            backgroundColor:
-              isDarkMode
-                ? '#121212'
-                : '#f5f7fa',
+            backgroundColor: isDarkMode ? '#121212' : '#f5f7fa',
           },
         ]}
       >
-        <ActivityIndicator
-          size="large"
-          color="#1a73e8"
-        />
-
-        <Text
-          style={[
-            styles.loadingText,
-            {
-              color: isDarkMode
-                ? '#aaa'
-                : '#666',
-            },
-          ]}
-        >
+        <ActivityIndicator size="large" color="#1a73e8" />
+        <Text style={[styles.loadingText, { color: isDarkMode ? '#aaa' : '#666' }]}>
           Loading Dashboard...
         </Text>
       </View>
@@ -194,206 +169,167 @@ export default function Dashboard() {
       style={[
         styles.container,
         {
-          backgroundColor:
-            isDarkMode
-              ? '#121212'
-              : '#f5f7fa',
+          backgroundColor: isDarkMode ? '#121212' : '#f5f7fa',
         },
       ]}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-        />
-      }
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       showsVerticalScrollIndicator={false}
     >
       {/* HEADER */}
-
       <View style={styles.header}>
         <Text style={styles.welcomeText}>
           Welcome Back 👋
         </Text>
-
+        <View style={styles.roleBadge}>
+          <Text style={styles.roleBadgeText}>
+            {userRole === 'shopkeeper' ? '🏪 Shopkeeper Dashboard' : '🛒 Customer Dashboard'}
+          </Text>
+        </View>
         <Text style={styles.dateText}>
-          {new Date().toLocaleDateString(
-            'en-PK',
-            {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            }
+          {new Date().toLocaleDateString('en-PK', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          })}
+        </Text>
+      </View>
+
+      {userRole === 'shopkeeper' ? (
+        // ================= SHOPKEEPER VIEW (Full Stats) =================
+        <>
+          <View style={styles.statsContainer}>
+            {/* TODAY SALES */}
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: '#dbeafe' }]}>
+                <Text style={styles.icon}>💰</Text>
+              </View>
+              <Text style={styles.statValue}>{formatPKR(stats.todaySales)}</Text>
+              <Text style={styles.statLabel}>Today's Sales</Text>
+            </View>
+
+            {/* TOTAL BILLS */}
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: '#dcfce7' }]}>
+                <Text style={styles.icon}>📄</Text>
+              </View>
+              <Text style={styles.statValue}>{stats.totalBills}</Text>
+              <Text style={styles.statLabel}>Total Bills</Text>
+            </View>
+
+            {/* PRODUCTS */}
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: '#fef3c7' }]}>
+                <Text style={styles.icon}>📦</Text>
+              </View>
+              <Text style={styles.statValue}>{stats.totalProducts}</Text>
+              <Text style={styles.statLabel}>Products</Text>
+            </View>
+          </View>
+
+          {/* REVENUE - Shopkeeper only */}
+          <View style={styles.revenueCard}>
+            <Text style={styles.revenueTitle}>Total Revenue</Text>
+            <Text style={styles.revenueAmount}>{formatPKR(totalRevenue)}</Text>
+            <Text style={styles.revenueSubText}>Overall Lifetime Sales</Text>
+          </View>
+
+          {/* Pending Orders Count */}
+          {pendingOrdersCount > 0 && (
+            <View style={styles.pendingCard}>
+              <Text style={styles.pendingIcon}>⏳</Text>
+              <Text style={styles.pendingTitle}>{pendingOrdersCount} Pending Orders</Text>
+              <Text style={styles.pendingSubText}>Generate bills to update stock</Text>
+            </View>
           )}
-        </Text>
-      </View>
+        </>
+      ) : (
+        // ================= CUSTOMER VIEW (Personal Stats Only - Completed Orders) =================
+        <>
+          <View style={styles.statsContainer}>
+            {/* MY ORDERS (Completed only) */}
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: '#dbeafe' }]}>
+                <Text style={styles.icon}>📦</Text>
+              </View>
+              <Text style={styles.statValue}>{customerStats.myOrders}</Text>
+              <Text style={styles.statLabel}>Orders Completed</Text>
+            </View>
 
-      {/* STATS */}
+            {/* TOTAL SPENT (Completed only) */}
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: '#dcfce7' }]}>
+                <Text style={styles.icon}>💰</Text>
+              </View>
+              <Text style={styles.statValue}>{formatPKR(customerStats.myTotalSpent)}</Text>
+              <Text style={styles.statLabel}>Total Spent</Text>
+            </View>
 
-      <View style={styles.statsContainer}>
-        {/* TODAY SALES */}
-
-        <View style={styles.statCard}>
-          <View
-            style={[
-              styles.iconBox,
-              {
-                backgroundColor:
-                  '#dbeafe',
-              },
-            ]}
-          >
-            <Text style={styles.icon}>
-              💰
-            </Text>
+            {/* ITEMS BOUGHT (Completed only) */}
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: '#fef3c7' }]}>
+                <Text style={styles.icon}>🛍️</Text>
+              </View>
+              <Text style={styles.statValue}>{customerStats.myItems}</Text>
+              <Text style={styles.statLabel}>Items Bought</Text>
+            </View>
           </View>
 
-          <Text style={styles.statValue}>
-            {formatPKR(
-              stats.todaySales
-            )}
-          </Text>
-
-          <Text style={styles.statLabel}>
-            Today Sales
-          </Text>
-        </View>
-
-        {/* TOTAL BILLS */}
-
-        <View style={styles.statCard}>
-          <View
-            style={[
-              styles.iconBox,
-              {
-                backgroundColor:
-                  '#dcfce7',
-              },
-            ]}
-          >
-            <Text style={styles.icon}>
-              📄
+          {/* CUSTOMER MESSAGE */}
+          <View style={styles.customerMessageCard}>
+            <Text style={styles.customerMessageIcon}>🛒</Text>
+            <Text style={styles.customerMessageTitle}>Welcome to BillingEase!</Text>
+            <Text style={styles.customerMessageText}>
+              Browse products, add to cart, and place orders easily.
+              Your order history and spending are shown above.
+              {'\n\n'}✨ Stats shown are for completed orders only.
             </Text>
           </View>
+        </>
+      )}
 
-          <Text style={styles.statValue}>
-            {stats.totalBills}
-          </Text>
-
-          <Text style={styles.statLabel}>
-            Total Bills
-          </Text>
-        </View>
-
-        {/* PRODUCTS */}
-
-        <View style={styles.statCard}>
-          <View
-            style={[
-              styles.iconBox,
-              {
-                backgroundColor:
-                  '#fef3c7',
-              },
-            ]}
-          >
-            <Text style={styles.icon}>
-              📦
-            </Text>
-          </View>
-
-          <Text style={styles.statValue}>
-            {stats.totalProducts}
-          </Text>
-
-          <Text style={styles.statLabel}>
-            Products
-          </Text>
-        </View>
-      </View>
-
-      {/* REVENUE */}
-
-      <View style={styles.revenueCard}>
-        <Text style={styles.revenueTitle}>
-          Total Revenue
-        </Text>
-
-        <Text style={styles.revenueAmount}>
-          {formatPKR(totalRevenue)}
-        </Text>
-
-        <Text style={styles.revenueSubText}>
-          Overall Lifetime Sales
-        </Text>
-      </View>
-
-      {/* QUICK ACTIONS */}
-
+      {/* QUICK ACTIONS - Role Based */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>
-          Quick Actions
-        </Text>
+        <Text style={styles.sectionTitle}>Quick Actions</Text>
 
         <View style={styles.actionRow}>
-          {/* BILLING */}
-
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() =>
-              router.push(
-                '/(tabs)/billing'
-              )
-            }
-          >
-            <Text style={styles.actionIcon}>
-              🛒
-            </Text>
-
-            <Text style={styles.actionText}>
-              Billing
-            </Text>
+          {/* BILLING - Everyone can access but different buttons */}
+          <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/billing')}>
+            <Text style={styles.actionIcon}>🛒</Text>
+            <Text style={styles.actionText}>Shop / Billing</Text>
           </TouchableOpacity>
 
-          {/* PRODUCTS */}
-
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() =>
-              router.push(
-                '/(tabs)/products'
-              )
-            }
-          >
-            <Text style={styles.actionIcon}>
-              📦
-            </Text>
-
-            <Text style={styles.actionText}>
-              Products
-            </Text>
+          {/* PRODUCTS - Everyone can view */}
+          <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/products')}>
+            <Text style={styles.actionIcon}>📦</Text>
+            <Text style={styles.actionText}>Products</Text>
           </TouchableOpacity>
 
-          {/* HISTORY */}
-
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() =>
-              router.push(
-                '/(tabs)/history'
-              )
-            }
-          >
-            <Text style={styles.actionIcon}>
-              📜
-            </Text>
-
-            <Text style={styles.actionText}>
-              History
-            </Text>
+          {/* HISTORY - Role based (customer sees own, shopkeeper sees all) */}
+          <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/history')}>
+            <Text style={styles.actionIcon}>📜</Text>
+            <Text style={styles.actionText}>History</Text>
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Shopkeeper Only - Additional Actions */}
+      {userRole === 'shopkeeper' && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Admin Actions</Text>
+          <View style={styles.actionRow}>
+            <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/profile')}>
+              <Text style={styles.actionIcon}>⚙️</Text>
+              <Text style={styles.actionText}>Settings</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/profile')}>
+              <Text style={styles.actionIcon}>📊</Text>
+              <Text style={styles.actionText}>Data Mgmt</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -431,9 +367,24 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
+  roleBadge: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 15,
+    marginTop: 8,
+  },
+
+  roleBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+
   dateText: {
     color: '#dbeafe',
-    marginTop: 5,
+    marginTop: 8,
     fontSize: 14,
   },
 
@@ -507,11 +458,69 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 
+  pendingCard: {
+    backgroundColor: '#fff3e0',
+    marginHorizontal: 15,
+    marginTop: 15,
+    borderRadius: 22,
+    padding: 20,
+    alignItems: 'center',
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#f39c12',
+  },
+
+  pendingIcon: {
+    fontSize: 32,
+    marginBottom: 8,
+  },
+
+  pendingTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#f39c12',
+    marginBottom: 4,
+  },
+
+  pendingSubText: {
+    fontSize: 11,
+    color: '#e67e22',
+  },
+
+  customerMessageCard: {
+    backgroundColor: '#e8f0fe',
+    marginHorizontal: 15,
+    marginTop: 20,
+    borderRadius: 22,
+    padding: 20,
+    alignItems: 'center',
+    elevation: 2,
+  },
+
+  customerMessageIcon: {
+    fontSize: 40,
+    marginBottom: 10,
+  },
+
+  customerMessageTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1a73e8',
+    marginBottom: 8,
+  },
+
+  customerMessageText: {
+    fontSize: 13,
+    color: '#555',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+
   section: {
     backgroundColor: '#fff',
     marginHorizontal: 15,
     marginTop: 20,
-    marginBottom: 40,
+    marginBottom: 20,
     borderRadius: 22,
     padding: 20,
     elevation: 4,

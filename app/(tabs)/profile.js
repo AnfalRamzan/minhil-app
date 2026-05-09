@@ -1,4 +1,4 @@
-// app/(tabs)/profile.js - API KEY FEATURE REMOVED
+// app/(tabs)/profile.js - COMPLETE UPDATED (Customer/Shopkeeper Separate)
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
@@ -17,7 +17,9 @@ import {
   updateUserProfile, 
   getDashboardStats, 
   formatPKR,
-  clearAllDatabaseData
+  clearAllDatabaseData,
+  getUserRole,
+  getCustomerStats
 } from '../../config/firebase';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -39,9 +41,7 @@ export default function Profile() {
   const [showEditSettingsModal, setShowEditSettingsModal] = useState(false);
   const [taxRate, setTaxRate] = useState('5');
   const [currency, setCurrency] = useState('PKR');
-  const [language, setLanguage] = useState('English');
   const [dateFormat, setDateFormat] = useState('DD/MM/YYYY');
-  const [showLanguageModal, setShowLanguageModal] = useState(false);
   const [showCurrencyModal, setShowCurrencyModal] = useState(false);
   const [showDateFormatModal, setShowDateFormatModal] = useState(false);
   const [appVersion, setAppVersion] = useState('2.0.0');
@@ -49,26 +49,47 @@ export default function Profile() {
   const [exporting, setExporting] = useState(false);
   const [showClearDataConfirm, setShowClearDataConfirm] = useState(false);
   const [clearingData, setClearingData] = useState(false);
+  const [userRole, setUserRole] = useState('customer');
+  
+  // ✅ Customer ke liye alag stats
+  const [customerPersonalStats, setCustomerPersonalStats] = useState({
+    myOrders: 0,
+    myTotalSpent: 0,
+    myItems: 0,
+    myPendingOrders: 0
+  });
 
-  const languages = ['English', 'Urdu', 'Arabic'];
   const currencies = ['PKR', 'USD', 'EUR', 'GBP'];
   const dateFormats = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'];
 
   useFocusEffect(
     useCallback(() => {
       loadAllData();
+      loadUserRole();
     }, [])
   );
 
+  const loadUserRole = async () => {
+    const result = await getUserRole();
+    if (result.success) {
+      setUserRole(result.role);
+    }
+  };
+
   const loadAllData = async () => {
     setLoading(true);
-    await loadStats();
+    if (userRole === 'shopkeeper') {
+      await loadStats();  // Shopkeeper ka full stats
+    } else {
+      await loadCustomerStats();  // Customer ka personal stats
+    }
     await loadUserData();
     await loadPreferences();
     await loadAppSettings();
     setLoading(false);
   };
 
+  // ✅ Shopkeeper ke liye - Full store stats
   const loadStats = async () => {
     try {
       const dashboardStats = await getDashboardStats();
@@ -96,6 +117,32 @@ export default function Profile() {
     }
   };
 
+  // ✅ Customer ke liye - Sirf apne personal stats (Completed orders only)
+  const loadCustomerStats = async () => {
+    try {
+      const customerStats = await getCustomerStats();
+      if (customerStats.success) {
+        setCustomerPersonalStats({
+          myOrders: customerStats.stats.totalOrders || 0,  // Sirf completed orders
+          myTotalSpent: customerStats.stats.totalSpent || 0,
+          myItems: customerStats.stats.totalItems || 0,
+          myPendingOrders: customerStats.stats.pendingOrders || 0
+        });
+      }
+      
+      // Sirf products count ke liye - Customer ko bhi products dekhne hain
+      const productsResult = await getProducts();
+      setStats({
+        todaySales: 0,  // ✅ Customer ke liye 0 - show nahi karna
+        totalBills: 0,   // ✅ Customer ke liye 0 - show nahi karna
+        totalProducts: productsResult.success ? productsResult.products.length : 0,
+        totalRevenue: 0,  // ✅ Customer ke liye 0 - show nahi karna
+      });
+    } catch (error) {
+      console.log('Load customer stats error:', error);
+    }
+  };
+
   const loadUserData = async () => {
     try {
       const user = getCurrentUser();
@@ -108,7 +155,7 @@ export default function Profile() {
           if (userData.success && userData.userData?.shopName) {
             savedShopName = userData.userData.shopName;
           } else {
-            savedShopName = 'My Store';
+            savedShopName = userRole === 'shopkeeper' ? 'My Store' : 'My Account';
           }
         }
         setShopName(savedShopName);
@@ -134,13 +181,11 @@ export default function Profile() {
     try {
       const savedTaxRate = await AsyncStorage.getItem('taxRate');
       const savedCurrency = await AsyncStorage.getItem('currency');
-      const savedLanguage = await AsyncStorage.getItem('language');
       const savedDateFormat = await AsyncStorage.getItem('dateFormat');
       const savedVersion = await AsyncStorage.getItem('appVersion');
       
       if (savedTaxRate) setTaxRate(savedTaxRate);
       if (savedCurrency) setCurrency(savedCurrency);
-      if (savedLanguage) setLanguage(savedLanguage);
       if (savedDateFormat) setDateFormat(savedDateFormat);
       if (savedVersion) setAppVersion(savedVersion);
     } catch (error) {
@@ -222,7 +267,6 @@ export default function Profile() {
     try {
       await AsyncStorage.setItem('taxRate', taxRate);
       await AsyncStorage.setItem('currency', currency);
-      await AsyncStorage.setItem('language', language);
       await AsyncStorage.setItem('dateFormat', dateFormat);
       
       Alert.alert('Success', 'App settings saved successfully!');
@@ -244,17 +288,20 @@ export default function Profile() {
       csvContent += `Export Date: ${new Date().toLocaleString()}\n`;
       csvContent += `Shop Name: ${shopName}\n`;
       csvContent += `Email: ${userEmail}\n`;
+      csvContent += `Role: ${userRole === 'shopkeeper' ? 'Shopkeeper' : 'Customer'}\n`;
       csvContent += '\n';
       
-      csvContent += '=== BILLS REPORT ===\n';
-      csvContent += 'Bill No.,Date,Total Amount,Items Count\n';
-      if (billsResult.success && billsResult.bills.length > 0) {
-        billsResult.bills.forEach(bill => {
-          const date = new Date(bill.createdAt).toLocaleString();
-          csvContent += `"${bill.billNumber}",${date},${bill.total},${bill.cart?.length || 0}\n`;
-        });
-      } else {
-        csvContent += 'No bills found\n';
+      if (userRole === 'shopkeeper') {
+        csvContent += '=== BILLS REPORT ===\n';
+        csvContent += 'Bill No.,Date,Total Amount,Items Count,Status,Customer Email\n';
+        if (billsResult.success && billsResult.bills.length > 0) {
+          billsResult.bills.forEach(bill => {
+            const date = new Date(bill.createdAt).toLocaleString();
+            csvContent += `"${bill.billNumber}",${date},${bill.total},${bill.cart?.length || 0},${bill.status || 'completed'},"${bill.createdByEmail || 'N/A'}"\n`;
+          });
+        } else {
+          csvContent += 'No bills found\n';
+        }
       }
       
       csvContent += '\n';
@@ -272,10 +319,16 @@ export default function Profile() {
       csvContent += '\n';
       
       csvContent += '=== SUMMARY ===\n';
-      csvContent += `Total Bills,${stats.totalBills}\n`;
-      csvContent += `Total Revenue,${formatPKR(stats.totalRevenue)}\n`;
+      if (userRole === 'shopkeeper') {
+        csvContent += `Total Bills,${stats.totalBills}\n`;
+        csvContent += `Total Revenue,${formatPKR(stats.totalRevenue)}\n`;
+        csvContent += `Today\'s Sales,${formatPKR(stats.todaySales)}\n`;
+      } else {
+        csvContent += `My Orders,${customerPersonalStats.myOrders}\n`;
+        csvContent += `My Total Spent,${formatPKR(customerPersonalStats.myTotalSpent)}\n`;
+        csvContent += `My Items Bought,${customerPersonalStats.myItems}\n`;
+      }
       csvContent += `Total Products,${stats.totalProducts}\n`;
-      csvContent += `Today\'s Sales,${formatPKR(stats.todaySales)}\n`;
       
       const fileName = `BillingEase_Export_${Date.now()}.csv`;
       const filePath = `${FileSystem.documentDirectory}${fileName}`;
@@ -319,7 +372,7 @@ export default function Profile() {
   const clearLocalData = async () => {
     Alert.alert(
       '⚠️ Clear Local Data',
-      'This will clear all local settings (notifications, theme, etc.). Cloud data will remain safe.\n\nAre you sure?',
+      'This will clear all local settings (notifications, etc.). Cloud data will remain safe.\n\nAre you sure?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -328,11 +381,10 @@ export default function Profile() {
           onPress: async () => {
             await AsyncStorage.clear();
             setProfileImage(null);
-            setShopName('My Store');
+            setShopName(userRole === 'shopkeeper' ? 'My Store' : 'My Account');
             setNotifications(true);
             setTaxRate('5');
             setCurrency('PKR');
-            setLanguage('English');
             setDateFormat('DD/MM/YYYY');
             Alert.alert('Success', 'All local data cleared successfully!');
             setShowDataManagement(false);
@@ -360,7 +412,9 @@ export default function Profile() {
             <Image source={{ uri: profileImage }} style={styles.profileImage} />
           ) : (
             <View style={styles.profileImagePlaceholder}>
-              <Text style={styles.profileImageText}>🛒</Text>
+              <Text style={styles.profileImageText}>
+                {userRole === 'shopkeeper' ? '🏪' : '🛒'}
+              </Text>
             </View>
           )}
           <View style={styles.cameraIcon}>
@@ -374,27 +428,70 @@ export default function Profile() {
           setTempShopName(shopName);
           setEditShopModal(true);
         }}>
-          <Text style={styles.editShopText}>✏️ Edit Shop Name</Text>
+          <Text style={styles.editShopText}>
+            {userRole === 'shopkeeper' ? '✏️ Edit Shop Name' : '✏️ Edit Name'}
+          </Text>
         </TouchableOpacity>
         
         <Text style={styles.userEmail}>{userEmail}</Text>
+        
+        <View style={styles.roleBadge}>
+          <Text style={styles.roleBadgeText}>
+            {userRole === 'shopkeeper' ? '🏪 Shopkeeper Account' : '🛒 Customer Account'}
+          </Text>
+        </View>
       </View>
 
-      {/* Stats Section */}
-      <View style={styles.statsContainer}>
-        <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{formatPKR(stats.todaySales)}</Text>
-          <Text style={styles.statLabel}>Today's Sale</Text>
+      {/* ✅ STATS SECTION - ROLE BASED */}
+      {userRole === 'shopkeeper' ? (
+        // ========== SHOPKEEPER STATS ==========
+        <View style={styles.statsContainer}>
+          <View style={styles.statCard}>
+            <Text style={styles.statNumber}>{formatPKR(stats.todaySales)}</Text>
+            <Text style={styles.statLabel}>Today's Sale</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statNumber}>{stats.totalBills}</Text>
+            <Text style={styles.statLabel}>Total Bills</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statNumber}>{stats.totalProducts}</Text>
+            <Text style={styles.statLabel}>Products</Text>
+          </View>
         </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{stats.totalBills}</Text>
-          <Text style={styles.statLabel}>Total Bills</Text>
+      ) : (
+        // ========== CUSTOMER PERSONAL STATS ==========
+        <View style={styles.customerStatsContainer}>
+          <View style={styles.customerStatCard}>
+            <Text style={styles.customerStatNumber}>{customerPersonalStats.myOrders}</Text>
+            <Text style={styles.customerStatLabel}>My Orders</Text>
+            <Text style={styles.customerStatSub}>(Completed)</Text>
+          </View>
+          <View style={styles.customerStatCard}>
+            <Text style={styles.customerStatNumber}>{formatPKR(customerPersonalStats.myTotalSpent)}</Text>
+            <Text style={styles.customerStatLabel}>Total Spent</Text>
+            <Text style={styles.customerStatSub}>(Lifetime)</Text>
+          </View>
+          <View style={styles.customerStatCard}>
+            <Text style={styles.customerStatNumber}>{customerPersonalStats.myItems}</Text>
+            <Text style={styles.customerStatLabel}>Items Bought</Text>
+            <Text style={styles.customerStatSub}>(Total Qty)</Text>
+          </View>
         </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{stats.totalProducts}</Text>
-          <Text style={styles.statLabel}>Products</Text>
+      )}
+
+      {/* ✅ EXTRA INFO FOR CUSTOMER - Pending Orders Note */}
+      {userRole === 'customer' && customerPersonalStats.myPendingOrders > 0 && (
+        <View style={styles.pendingInfoCard}>
+          <Text style={styles.pendingInfoIcon}>⏳</Text>
+          <Text style={styles.pendingInfoText}>
+            You have {customerPersonalStats.myPendingOrders} pending order(s)
+          </Text>
+          <Text style={styles.pendingInfoSub}>
+            These will be counted after shopkeeper processes them
+          </Text>
         </View>
-      </View>
+      )}
 
       {/* Preferences Section */}
       <View style={styles.menuSection}>
@@ -434,13 +531,16 @@ export default function Profile() {
           <Text style={styles.menuArrow}>→</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem} onPress={() => setShowDataManagement(true)}>
-          <View style={styles.menuIcon}>
-            <Text style={styles.menuIconText}>📊</Text>
-          </View>
-          <Text style={styles.menuText}>Data Management</Text>
-          <Text style={styles.menuArrow}>→</Text>
-        </TouchableOpacity>
+        {/* Data Management - Only for Shopkeeper */}
+        {userRole === 'shopkeeper' && (
+          <TouchableOpacity style={styles.menuItem} onPress={() => setShowDataManagement(true)}>
+            <View style={styles.menuIcon}>
+              <Text style={styles.menuIconText}>📊</Text>
+            </View>
+            <Text style={styles.menuText}>Data Management</Text>
+            <Text style={styles.menuArrow}>→</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity style={styles.menuItem} onPress={() => setShowAbout(true)}>
           <View style={styles.menuIcon}>
@@ -459,16 +559,18 @@ export default function Profile() {
         </TouchableOpacity>
       </View>
 
-      {/* ========== MODALS ========== */}
+      {/* ========== MODALS (Same as before) ========== */}
 
       {/* Edit Shop Name Modal */}
       <Modal visible={editShopModal} transparent={true} animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Edit Shop Name</Text>
+            <Text style={styles.modalTitle}>
+              {userRole === 'shopkeeper' ? 'Edit Shop Name' : 'Edit Name'}
+            </Text>
             <TextInput
               style={styles.modalInput}
-              placeholder="Enter shop name"
+              placeholder={userRole === 'shopkeeper' ? "Enter shop name" : "Enter your name"}
               placeholderTextColor="#aaa"
               value={tempShopName}
               onChangeText={setTempShopName}
@@ -512,11 +614,6 @@ export default function Profile() {
               <Text style={styles.settingValue}>{currency}</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity style={styles.settingItem} onPress={() => setShowLanguageModal(true)}>
-              <Text style={styles.settingLabel}>Language</Text>
-              <Text style={styles.settingValue}>{language}</Text>
-            </TouchableOpacity>
-            
             <TouchableOpacity style={styles.settingItem} onPress={() => setShowDateFormatModal(true)}>
               <Text style={styles.settingLabel}>Date Format</Text>
               <Text style={styles.settingValue}>{dateFormat}</Text>
@@ -550,29 +647,6 @@ export default function Profile() {
               >
                 <Text style={styles.optionText}>{curr}</Text>
                 {currency === curr && <Text style={styles.checkMark}>✓</Text>}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Language Modal */}
-      <Modal visible={showLanguageModal} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Language</Text>
-            {languages.map((lang) => (
-              <TouchableOpacity
-                key={lang}
-                style={styles.optionItem}
-                onPress={() => {
-                  setLanguage(lang);
-                  setShowLanguageModal(false);
-                  Alert.alert('Language Changed', `App language will change to ${lang} on restart`);
-                }}
-              >
-                <Text style={styles.optionText}>{lang}</Text>
-                {language === lang && <Text style={styles.checkMark}>✓</Text>}
               </TouchableOpacity>
             ))}
           </View>
@@ -638,33 +712,35 @@ export default function Profile() {
         </View>
       </Modal>
 
-      {/* Data Management Modal */}
-      <Modal visible={showDataManagement} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>📊 Data Management</Text>
-            
-            <TouchableOpacity style={styles.dataOption} onPress={() => setShowExportModal(true)}>
-              <Text style={styles.dataOptionText}>📤 Export Data to CSV</Text>
-              <Text style={styles.dataOptionSub}>Export bills, products, and summary</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.dataOption} onPress={() => setShowClearDataConfirm(true)}>
-              <Text style={[styles.dataOptionText, { color: '#dc3545' }]}>🗑️ Clear All Database Data</Text>
-              <Text style={styles.dataOptionSub}>Delete all products, bills, and patterns (irreversible)</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.dataOption} onPress={clearLocalData}>
-              <Text style={[styles.dataOptionText, { color: '#f39c12' }]}>🗑️ Clear Local Settings Only</Text>
-              <Text style={styles.dataOptionSub}>Keep products/bills, reset app preferences</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.closeButton} onPress={() => setShowDataManagement(false)}>
-              <Text style={styles.closeButtonText}>Close</Text>
-            </TouchableOpacity>
+      {/* Data Management Modal - Only for Shopkeeper */}
+      {userRole === 'shopkeeper' && (
+        <Modal visible={showDataManagement} transparent={true} animationType="slide">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>📊 Data Management</Text>
+              
+              <TouchableOpacity style={styles.dataOption} onPress={() => setShowExportModal(true)}>
+                <Text style={styles.dataOptionText}>📤 Export Data to CSV</Text>
+                <Text style={styles.dataOptionSub}>Export bills, products, and summary</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.dataOption} onPress={() => setShowClearDataConfirm(true)}>
+                <Text style={[styles.dataOptionText, { color: '#dc3545' }]}>🗑️ Clear All Database Data</Text>
+                <Text style={styles.dataOptionSub}>Delete all products, bills, and patterns (irreversible)</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.dataOption} onPress={clearLocalData}>
+                <Text style={[styles.dataOptionText, { color: '#f39c12' }]}>🗑️ Clear Local Settings Only</Text>
+                <Text style={styles.dataOptionSub}>Keep products/bills, reset app preferences</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.closeButton} onPress={() => setShowDataManagement(false)}>
+                <Text style={styles.closeButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
 
       {/* Clear Data Confirmation Modal */}
       <Modal visible={showClearDataConfirm} transparent={true} animationType="fade">
@@ -739,6 +815,7 @@ export default function Profile() {
               <Text style={styles.featureItem}>🎯 Smart Product Suggestions</Text>
               <Text style={styles.featureItem}>📈 Real-time Analytics</Text>
               <Text style={styles.featureItem}>☁️ Cloud Sync & Backup</Text>
+              <Text style={styles.featureItem}>👥 Role-Based Access (Customer/Shopkeeper)</Text>
             </View>
             <Text style={styles.copyright}>© 2025-2026 BillingEase</Text>
             <Text style={styles.credits}>Developed with ❤️ in Pakistan</Text>
@@ -780,11 +857,27 @@ const styles = StyleSheet.create({
   editShopButton: { marginTop: 6, paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 20 },
   editShopText: { fontSize: 12, color: '#fff' },
   userEmail: { fontSize: 12, color: '#e8f0fe', marginTop: 8 },
+  roleBadge: { marginTop: 10, backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 15 },
+  roleBadgeText: { fontSize: 11, color: '#fff', fontWeight: '500' },
   
+  // Shopkeeper Stats
   statsContainer: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 20, marginTop: -25, marginBottom: 20 },
   statCard: { backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 20, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6, elevation: 3, minWidth: 100 },
   statNumber: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
   statLabel: { fontSize: 11, color: '#666', marginTop: 4 },
+  
+  // Customer Personal Stats
+  customerStatsContainer: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 20, marginTop: -25, marginBottom: 20 },
+  customerStatCard: { backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6, elevation: 3, minWidth: 105 },
+  customerStatNumber: { fontSize: 18, fontWeight: 'bold', color: '#34a853' },
+  customerStatLabel: { fontSize: 11, color: '#666', marginTop: 4 },
+  customerStatSub: { fontSize: 9, color: '#999', marginTop: 2 },
+  
+  // Pending Info Card for Customer
+  pendingInfoCard: { backgroundColor: '#fff3e0', marginHorizontal: 20, marginBottom: 20, borderRadius: 14, padding: 12, alignItems: 'center', borderWidth: 1, borderColor: '#f39c12' },
+  pendingInfoIcon: { fontSize: 24, marginBottom: 6 },
+  pendingInfoText: { fontSize: 13, color: '#e67e22', fontWeight: '500', textAlign: 'center' },
+  pendingInfoSub: { fontSize: 10, color: '#999', marginTop: 4, textAlign: 'center' },
   
   menuSection: { backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 16, paddingHorizontal: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2, marginBottom: 20 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#1a73e8', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
