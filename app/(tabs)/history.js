@@ -1,15 +1,23 @@
-// app/(tabs)/history.js - COMPLETE WITH STOCK UPDATE ON BILL GENERATION
+// app/(tabs)/history.js - WITH "CONFIRMED" STATUS
 
 import React, { useState, useCallback } from 'react';
-import { 
-  View, Text, FlatList, StyleSheet, TouchableOpacity, 
-  Alert, RefreshControl, Modal, ScrollView, ActivityIndicator 
+import {
+  View,
+  Text,
+  FlatList,
+  StyleSheet,
+  TouchableOpacity,
+  Alert,
+  RefreshControl,
+  Modal,
+  ScrollView,
+  ActivityIndicator
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { 
-  getBills, getMyOrders, getUserRole, formatPKR, 
+import {
+  getBills, getMyOrders, getUserRole, formatPKR,
   updateBillStatus, recordPurchaseCombination, getCurrentUser,
-  completeBillAndUpdateStock, getCustomerStats
+  confirmBillAndUpdateStock, getCustomerStats
 } from '../../config/firebase';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -41,14 +49,14 @@ export default function History() {
     }
     const role = await loadUserRole();
     await loadBills(role);
-    
+
     if (role === 'customer') {
       const stats = await getCustomerStats();
       if (stats.success) {
         setCustomerStats(stats.stats);
       }
     }
-    
+
     setLoading(false);
   };
 
@@ -68,37 +76,29 @@ export default function History() {
         const roleResult = await getUserRole();
         role = roleResult.success ? roleResult.role : 'customer';
       }
-      
+
       const currentUser = getCurrentUser();
       console.log(`🔍 Loading bills for: ${currentUser?.email} (Role: ${role})`);
-      
+
       let result;
       if (role === 'shopkeeper') {
-        // ✅ Shopkeeper sees ALL orders from ALL customers
         result = await getBills();
         console.log(`🏪 Shopkeeper view: Found ${result.bills?.length} total orders`);
       } else {
-        // ✅ Customer sees ONLY their own orders (all statuses)
         result = await getMyOrders(true);
         console.log(`🛒 Customer view: Found ${result.bills?.length} of my orders`);
       }
-      
+
       if (result.success && result.bills) {
-        // Log each bill's creator for debugging
-        result.bills.forEach(bill => {
-          console.log(`  Bill ${bill.billNumber}: Created by ${bill.createdByEmail} (${bill.createdById}) Status: ${bill.status}`);
-        });
-        
-        const sortedBills = result.bills.sort((a, b) => 
+        const sortedBills = result.bills.sort((a, b) =>
           new Date(b.createdAt) - new Date(a.createdAt)
         );
         setBills(sortedBills);
-        
-        // Only count completed for sales total
-        const completedBills = sortedBills.filter(b => b.status === 'completed');
+
+        const confirmedBills = sortedBills.filter(b => b.status === 'confirmed');
         let sales = 0;
         let items = 0;
-        completedBills.forEach(bill => {
+        confirmedBills.forEach(bill => {
           sales += bill.total || 0;
           items += bill.cart?.length || 0;
         });
@@ -132,41 +132,39 @@ export default function History() {
   };
 
   const getOrderStatus = (bill) => {
-    if (bill.status === 'completed') {
-      return { text: 'Completed', color: '#34a853', icon: 'checkmark-circle' };
+    if (bill.status === 'confirmed') {
+      return { text: 'Confirmed', color: '#34a853', icon: 'checkmark-circle' };
     }
     return { text: 'Pending', color: '#f39c12', icon: 'time' };
   };
 
-  const generateBillFromHistory = async (bill) => {
+  const confirmOrderFromHistory = async (bill) => {
     Alert.alert(
-      'Generate Bill',
-      `Generate bill for Order #${bill.billNumber}?\n\nThis will:\n✅ Update product stock\n✅ Update sales count\n✅ Mark order as completed\n\nTotal: ${formatPKR(bill.total)}`,
+      '📄 Confirm Order',
+      `Confirm Order #${bill.billNumber}?\n\nThis will:\n✅ Update product stock\n✅ Update sales count\n✅ Mark order as confirmed\n\nTotal: ${formatPKR(bill.total)}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Generate',
+          text: 'Confirm Order',
           onPress: async () => {
             setGeneratingBill(true);
             try {
-              // First update stock and then bill status
-              const result = await completeBillAndUpdateStock(bill.id, bill.cart || []);
-              
+              const result = await confirmBillAndUpdateStock(bill.id, bill.cart || []);
+
               if (result.success) {
-                // Record purchase patterns for AI learning
                 if (bill.cart && bill.cart.length > 1) {
                   await recordPurchaseCombination(bill.cart);
                 }
-                
-                Alert.alert('✅ Success', 'Bill generated successfully!\n\nStock updated and order completed.');
+
+                Alert.alert('✅ Order Confirmed!', 'Order confirmed successfully!\n\nStock updated.');
                 setModalVisible(false);
                 const role = await loadUserRole();
                 await loadBills(role);
               } else {
-                Alert.alert('Error', result.error || 'Failed to generate bill');
+                Alert.alert('Error', result.error || 'Failed to confirm order');
               }
             } catch (error) {
-              console.error('Generate bill error:', error);
+              console.error('Confirm order error:', error);
               Alert.alert('Error', 'Something went wrong');
             } finally {
               setGeneratingBill(false);
@@ -188,7 +186,7 @@ export default function History() {
     const isPending = item.status === 'pending';
     const isCustomerOrder = userRole === 'customer';
     const isShopkeeperView = userRole === 'shopkeeper';
-    
+
     return (
       <TouchableOpacity style={styles.billCard} onPress={() => viewBillDetails(item)} activeOpacity={0.7}>
         <View style={styles.billHeader}>
@@ -209,11 +207,9 @@ export default function History() {
           <View style={styles.itemsInfo}>
             <Text style={styles.itemsLabel}>Items</Text>
             <Text style={styles.itemsCount}>{item.cart?.length || 0} products</Text>
-            {/* ✅ Show customer email ONLY for shopkeeper */}
             {isShopkeeperView && item.createdByEmail && (
               <Text style={styles.customerEmail}>👤 Customer: {item.createdByEmail}</Text>
             )}
-            {/* ✅ Show "You" for customer's own orders */}
             {isCustomerOrder && (
               <Text style={styles.customerEmail}>👤 You</Text>
             )}
@@ -236,23 +232,21 @@ export default function History() {
             </View>
           )}
         </ScrollView>
-        
-        {/* ✅ Show pending notice for customers */}
+
         {isCustomerOrder && isPending && (
           <View style={styles.pendingNotice}>
             <Ionicons name="time" size={12} color="#f39c12" />
-            <Text style={styles.pendingNoticeText}>Waiting for shopkeeper to process</Text>
+            <Text style={styles.pendingNoticeText}>Waiting for shopkeeper to confirm</Text>
           </View>
         )}
-        
-        {/* ✅ Show generate bill button for shopkeeper on pending orders */}
+
         {isShopkeeperView && isPending && (
-          <TouchableOpacity 
-            style={styles.generateBillChip} 
-            onPress={() => generateBillFromHistory(item)}
+          <TouchableOpacity
+            style={styles.confirmOrderChip}
+            onPress={() => confirmOrderFromHistory(item)}
             disabled={generatingBill}
           >
-            <Text style={styles.generateBillChipText}>✓ Generate Bill & Update Stock</Text>
+            <Text style={styles.confirmOrderChipText}>🧾 Confirm Order</Text>
           </TouchableOpacity>
         )}
       </TouchableOpacity>
@@ -297,7 +291,7 @@ export default function History() {
         {userRole === 'customer' && (
           <View style={styles.customerInfoNote}>
             <Text style={styles.customerInfoNoteText}>
-              💰 Showing your completed orders only
+              💰 Showing your confirmed orders only
             </Text>
           </View>
         )}
@@ -308,8 +302,8 @@ export default function History() {
           <Ionicons name="document-text-outline" size={64} color="#ccc" />
           <Text style={styles.emptyText}>No Orders Found</Text>
           <Text style={styles.emptySubText}>
-            {userRole === 'shopkeeper' 
-              ? 'No orders from customers yet' 
+            {userRole === 'shopkeeper'
+              ? 'No orders from customers yet'
               : 'Place your first order to see it here'}
           </Text>
         </View>
@@ -347,7 +341,6 @@ export default function History() {
                     <Text style={styles.detailLabel}>Date:</Text>
                     <Text style={styles.detailValue}>{new Date(selectedBill.createdAt).toLocaleString()}</Text>
                   </View>
-                  {/* ✅ Show customer info ONLY for shopkeeper */}
                   {userRole === 'shopkeeper' && selectedBill.createdByEmail && (
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Customer:</Text>
@@ -356,8 +349,8 @@ export default function History() {
                   )}
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Status:</Text>
-                    <Text style={[styles.detailValue, { color: selectedBill.status === 'completed' ? '#34a853' : '#f39c12' }]}>
-                      {selectedBill.status === 'completed' ? 'Completed ✓' : 'Pending ⏳'}
+                    <Text style={[styles.detailValue, { color: selectedBill.status === 'confirmed' ? '#34a853' : '#f39c12' }]}>
+                      {selectedBill.status === 'confirmed' ? 'Confirmed ✓' : 'Pending ⏳'}
                     </Text>
                   </View>
                 </View>
@@ -391,30 +384,27 @@ export default function History() {
                   </View>
                 </View>
 
-                {/* ✅ Generate Bill Button - Only for Shopkeeper with Pending Order */}
                 {userRole === 'shopkeeper' && selectedBill.status === 'pending' && (
-                  <TouchableOpacity 
-                    style={styles.generateBtn} 
-                    onPress={() => generateBillFromHistory(selectedBill)} 
+                  <TouchableOpacity
+                    style={styles.confirmOrderBtn}
+                    onPress={() => confirmOrderFromHistory(selectedBill)}
                     disabled={generatingBill}
                   >
-                    {generatingBill ? <ActivityIndicator color="#fff" /> : <Text style={styles.generateBtnText}>✓ Generate Bill & Update Stock</Text>}
+                    {generatingBill ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmOrderBtnText}>🧾 Confirm Order</Text>}
                   </TouchableOpacity>
                 )}
 
-                {/* ✅ Pending Message for Customer */}
                 {userRole === 'customer' && selectedBill.status === 'pending' && (
                   <View style={styles.pendingMsg}>
                     <Ionicons name="time-outline" size={20} color="#f39c12" />
-                    <Text style={styles.pendingMsgText}>Order pending. Shopkeeper will process soon.</Text>
+                    <Text style={styles.pendingMsgText}>Order pending. Shopkeeper will confirm soon.</Text>
                   </View>
                 )}
 
-                {/* ✅ Completed Message */}
-                {selectedBill.status === 'completed' && (
-                  <View style={styles.completedMsg}>
+                {selectedBill.status === 'confirmed' && (
+                  <View style={styles.confirmedMsg}>
                     <Ionicons name="checkmark-circle" size={20} color="#34a853" />
-                    <Text style={styles.completedMsgText}>Order completed! Thank you for shopping.</Text>
+                    <Text style={styles.confirmedMsgText}>Order confirmed! Thank you for shopping.</Text>
                   </View>
                 )}
               </ScrollView>
@@ -467,8 +457,8 @@ const styles = StyleSheet.create({
   moreChipText: { fontSize: 11, color: '#1a73e8' },
   pendingNotice: { flexDirection: 'row', alignItems: 'center', marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#f0f0f0', gap: 6 },
   pendingNoticeText: { fontSize: 10, color: '#f39c12' },
-  generateBillChip: { backgroundColor: '#34a853', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, alignSelf: 'flex-start', marginTop: 8 },
-  generateBillChipText: { color: '#fff', fontSize: 11, fontWeight: '500' },
+  confirmOrderChip: { backgroundColor: '#34a853', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, alignSelf: 'flex-start', marginTop: 8 },
+  confirmOrderChipText: { color: '#fff', fontSize: 11, fontWeight: '500' },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
   emptyText: { fontSize: 18, fontWeight: '500', color: '#999', marginBottom: 8, marginTop: 16 },
   emptySubText: { fontSize: 13, color: '#bbb', textAlign: 'center' },
@@ -494,12 +484,12 @@ const styles = StyleSheet.create({
   totalRowModal: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 10, marginTop: 8, borderTopWidth: 1, borderTopColor: '#e0e0e0' },
   totalLabelModal: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   totalValueModal: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
-  generateBtn: { backgroundColor: '#34a853', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 16 },
-  generateBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  confirmOrderBtn: { backgroundColor: '#34a853', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 16 },
+  confirmOrderBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   pendingMsg: { backgroundColor: '#fff3e0', padding: 12, borderRadius: 12, marginTop: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 },
   pendingMsgText: { color: '#f39c12', fontSize: 13 },
-  completedMsg: { backgroundColor: '#e8f5e9', padding: 12, borderRadius: 12, marginTop: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 },
-  completedMsgText: { color: '#34a853', fontSize: 13 },
+  confirmedMsg: { backgroundColor: '#e8f5e9', padding: 12, borderRadius: 12, marginTop: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 },
+  confirmedMsgText: { color: '#34a853', fontSize: 13 },
   closeBtn: { backgroundColor: '#1a73e8', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 16 },
   closeBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });

@@ -1,6 +1,6 @@
-// config/firebase.js - COMPLETE WORKING VERSION WITH ROLE-BASED DATA & STOCK MANAGEMENT
+// config/firebase.js - COMPLETE FIXED VERSION WITH "CONFIRMED" STATUS
 
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getFirestore, 
   collection, 
@@ -16,8 +16,7 @@ import {
   setDoc,
   onSnapshot,
   limit,
-  writeBatch,
-  increment
+  writeBatch
 } from 'firebase/firestore';
 import { 
   initializeAuth, 
@@ -39,69 +38,157 @@ const firebaseConfig = {
   measurementId: "G-GRVVRBC3NT"
 };
 
-const app = initializeApp(firebaseConfig);
+// Initialize Firebase
+let app;
+if (!getApps().length) {
+  app = initializeApp(firebaseConfig);
+} else {
+  app = getApp();
+}
 
-const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(ReactNativeAsyncStorage)
-});
+// Initialize Auth
+let auth;
+try {
+  auth = initializeAuth(app, {
+    persistence: getReactNativePersistence(ReactNativeAsyncStorage)
+  });
+} catch (error) {
+  const { getAuth } = require('firebase/auth');
+  auth = getAuth(app);
+}
 
 const db = getFirestore(app);
 
+// Utility Functions
 export const formatPKR = (amount) => {
   if (!amount && amount !== 0) return '₨ 0';
-  return `₨ ${Math.round(amount).toLocaleString('en-PK') || 0}`;
+  return `₨ ${Math.round(amount).toLocaleString('en-PK')}`;
 };
 
-// ================= DARAZ LINK GENERATOR =================
 export const generateDarazLink = (productName) => {
   if (!productName || productName === 'Unknown') return 'https://www.daraz.pk/';
   const searchQuery = encodeURIComponent(productName.trim().toLowerCase());
-  return `https://www.daraz.pk/catalog/?q=${searchQuery}&spm=a2a0e.tm80335411.search.1`;
+  return `https://www.daraz.pk/catalog/?q=${searchQuery}`;
 };
 
-// ================= USER ROLE MANAGEMENT =================
+// ================= NOTIFICATION SYSTEM =================
 let currentUserIdForNotifications = null;
+let lastProcessedOrderIds = new Set();
+let notificationUnsubscribe = null;
 
-export const getUserRole = async () => {
+export const setCurrentUserForNotifications = (userId) => {
+  console.log(`🔔 Setting current user for notifications: ${userId}`);
+  currentUserIdForNotifications = userId;
+  lastProcessedOrderIds.clear();
+};
+
+export const subscribeToNewOrders = (callback) => {
+  if (notificationUnsubscribe) {
+    console.log('🧹 Cleaning up existing notification subscription');
+    notificationUnsubscribe();
+    notificationUnsubscribe = null;
+  }
+  
+  if (!currentUserIdForNotifications) {
+    console.log('⚠️ No current user set for notifications - notifications disabled');
+    return () => {};
+  }
+  
+  console.log(`🔔 Setting up real-time notifications for user: ${currentUserIdForNotifications}`);
+  
   try {
-    const user = getCurrentUser();
-    if (!user) return { success: false, role: null };
+    const q = query(
+      collection(db, 'bills'), 
+      where('status', '==', 'pending'),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
     
-    const userDoc = await getDoc(doc(db, 'users', user.uid));
-    if (userDoc.exists()) {
-      return { success: true, role: userDoc.data().role || 'customer' };
-    }
-    return { success: false, role: 'customer' };
+    let isInitialLoad = true;
+    
+    notificationUnsubscribe = onSnapshot(q, (snapshot) => {
+      console.log(`📡 Firestore snapshot: ${snapshot.docChanges().length} changes`);
+      
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const orderData = { id: change.doc.id, ...change.doc.data() };
+          
+          if (isInitialLoad) {
+            console.log(`  ⏭️ Skipping (initial load)`);
+            return;
+          }
+          
+          if (orderData.createdById === currentUserIdForNotifications) {
+            console.log(`  ⏭️ Skipping (self order)`);
+            return;
+          }
+          
+          if (lastProcessedOrderIds.has(orderData.id)) {
+            console.log(`  ⏭️ Skipping (already processed)`);
+            return;
+          }
+          
+          console.log(`🔔🔔🔔 NEW ORDER #${orderData.billNumber} 🔔🔔🔔`);
+          lastProcessedOrderIds.add(orderData.id);
+          callback(orderData);
+          
+          if (lastProcessedOrderIds.size > 100) {
+            const iterator = lastProcessedOrderIds.values();
+            for (let i = 0; i < 50; i++) {
+              lastProcessedOrderIds.delete(iterator.next().value);
+            }
+          }
+        }
+      });
+      
+      isInitialLoad = false;
+    }, (error) => {
+      console.error('❌ Firestore snapshot error:', error);
+    });
+    
+    console.log('✅ Notification subscription created successfully');
+    
+    return () => {
+      console.log('🧹 Cleaning up notification subscription');
+      if (notificationUnsubscribe) {
+        notificationUnsubscribe();
+        notificationUnsubscribe = null;
+      }
+    };
   } catch (error) {
+    console.error('❌ Failed to create notification subscription:', error);
+    return null;
+  }
+};
+
+// ================= PROFILE IMAGE FUNCTIONS =================
+export const updateProfileImage = async (userId, imageUri) => {
+  try {
+    await updateDoc(doc(db, 'users', userId), {
+      profileImage: imageUri,
+      updatedAt: new Date().toISOString()
+    });
+    return { success: true };
+  } catch (error) {
+    console.error('Update profile image error:', error);
     return { success: false, error: error.message };
+  }
+};
+
+export const getProfileImage = async (userId) => {
+  try {
+    const userDoc = await getDoc(doc(db, 'users', userId));
+    if (userDoc.exists() && userDoc.data().profileImage) {
+      return { success: true, imageUri: userDoc.data().profileImage };
+    }
+    return { success: true, imageUri: null };
+  } catch (error) {
+    console.error('Get profile image error:', error);
+    return { success: false, imageUri: null };
   }
 };
 
 // ================= STOCK MANAGEMENT =================
-export const updateProductStock = async (productId, quantitySold) => {
-  try {
-    const productRef = doc(db, 'products', productId);
-    const productDoc = await getDoc(productRef);
-    
-    if (productDoc.exists()) {
-      const currentStock = productDoc.data().stock || 0;
-      const newStock = Math.max(0, currentStock - quantitySold);
-      const currentSalesCount = productDoc.data().salesCount || 0;
-      
-      await updateDoc(productRef, {
-        stock: newStock,
-        salesCount: currentSalesCount + quantitySold,
-        lastUpdated: new Date().toISOString()
-      });
-      
-      return { success: true, newStock };
-    }
-    return { success: false, error: 'Product not found' };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
-
 export const updateBulkProductStock = async (cartItems) => {
   try {
     const batch = writeBatch(db);
@@ -125,38 +212,45 @@ export const updateBulkProductStock = async (cartItems) => {
     await batch.commit();
     return { success: true };
   } catch (error) {
+    console.error('Stock update error:', error);
     return { success: false, error: error.message };
   }
 };
 
-// ================= MARKET PRICE FROM DATABASE =================
-export const fetchMarketPriceFromDB = async (productName, category = 'default') => {
+export const validateCartStock = async (cart) => {
+  try {
+    for (const item of cart) {
+      const productRef = doc(db, 'products', item.id);
+      const productDoc = await getDoc(productRef);
+      if (productDoc.exists()) {
+        const currentStock = productDoc.data().stock || 0;
+        if (item.quantity > currentStock) {
+          return { 
+            valid: false, 
+            product: item.name,
+            available: currentStock,
+            requested: item.quantity
+          };
+        }
+      }
+    }
+    return { valid: true };
+  } catch (error) {
+    return { valid: false, error: error.message };
+  }
+};
+
+// ================= MARKET PRICE =================
+export const fetchMarketPrice = async (productName, category = 'default') => {
   try {
     const productsRef = collection(db, 'products');
-    const q = query(productsRef, where('name', '>=', productName), where('name', '<=', productName + '\uf8ff'), limit(1));
+    const q = query(productsRef, where('category', '==', category), limit(10));
     const snapshot = await getDocs(q);
     
     if (!snapshot.empty) {
-      const product = snapshot.docs[0].data();
-      if (product.marketPrice) {
-        return {
-          success: true,
-          marketPrice: product.marketPrice,
-          source: 'Database (Exact Match)',
-          trend: product.marketTrend || 'stable',
-          url: generateDarazLink(productName),
-          exactMatch: true
-        };
-      }
-    }
-    
-    const categoryQuery = query(productsRef, where('category', '==', category), limit(10));
-    const categorySnapshot = await getDocs(categoryQuery);
-    
-    if (!categorySnapshot.empty) {
       let totalPrice = 0;
       let count = 0;
-      categorySnapshot.forEach(doc => {
+      snapshot.forEach(doc => {
         const data = doc.data();
         const price = data.pricePKR || data.price || 0;
         if (price > 0) {
@@ -168,63 +262,22 @@ export const fetchMarketPriceFromDB = async (productName, category = 'default') 
       if (count > 0) {
         const avgPrice = totalPrice / count;
         return {
-          success: true,
+          found: true,
           marketPrice: Math.round(avgPrice),
           source: `Database (${category} Category Average)`,
-          trend: 'stable',
           url: generateDarazLink(productName),
-          exactMatch: false
+          trend: 'stable'
         };
       }
     }
     
-    return { success: false, marketPrice: null };
+    return { found: false, marketPrice: null, source: 'No data available', url: generateDarazLink(productName), trend: 'unknown' };
   } catch (error) {
-    return { success: false, marketPrice: null };
+    return { found: false, marketPrice: null, source: 'Error fetching data', url: generateDarazLink(productName), trend: 'unknown' };
   }
 };
 
-// ================= MAIN MARKET PRICE FETCH =================
-let marketCache = {};
-let marketCacheTimer = null;
-
-// Clear cache every 5 minutes
-const setupCacheCleanup = () => {
-  if (marketCacheTimer) clearInterval(marketCacheTimer);
-  marketCacheTimer = setInterval(() => {
-    const now = Date.now();
-    for (const key in marketCache) {
-      if (marketCache[key] && (now - marketCache[key].timestamp) > 300000) {
-        delete marketCache[key];
-      }
-    }
-  }, 300000);
-};
-setupCacheCleanup();
-
-export const fetchMarketPrice = async (productName, category = 'default') => {
-  const searchKey = (productName || "").toLowerCase().trim();
-  
-  if (marketCache[searchKey] && (Date.now() - marketCache[searchKey].timestamp) < 300000) {
-    return marketCache[searchKey].data;
-  }
-  
-  const result = await fetchMarketPriceFromDB(productName, category);
-  
-  const finalResult = {
-    found: result?.marketPrice !== null,
-    exactMatch: result?.exactMatch || false,
-    marketPrice: result?.marketPrice || null,
-    source: result?.source || 'No data available',
-    url: generateDarazLink(productName),
-    trend: result?.trend || 'unknown'
-  };
-  
-  marketCache[searchKey] = { data: finalResult, timestamp: Date.now() };
-  return finalResult;
-};
-
-// ================= AI DISCOUNT CALCULATION =================
+// ================= AI DISCOUNT =================
 export const calculateAIDynamicDiscount = async (product) => {
   if (!product) {
     return { discount: 0, discountedPrice: 0, originalPrice: 0, reason: 'Invalid product', savings: 0 };
@@ -249,18 +302,12 @@ export const calculateAIDynamicDiscount = async (product) => {
   } else if (salesCount < 5) {
     totalDiscount += 7;
     reasons.push(`Low sales (${salesCount} units)`);
-  } else if (salesCount < 15) {
-    totalDiscount += 3;
-    reasons.push('Building momentum');
   } else if (salesCount > 50) {
     totalDiscount = Math.max(0, totalDiscount - 5);
     reasons.push('Best seller');
   }
   
-  if (stockLevel > 100) {
-    totalDiscount += 15;
-    reasons.push(`High stock (${stockLevel} units)`);
-  } else if (stockLevel > 50) {
+  if (stockLevel > 50) {
     totalDiscount += 8;
     reasons.push('Good stock available');
   } else if (stockLevel < 5 && stockLevel > 0) {
@@ -294,7 +341,7 @@ export const calculateAIDynamicDiscount = async (product) => {
   };
 };
 
-// ================= AI PURCHASE PATTERNS (DYNAMIC LEARNING) =================
+// ================= AI PURCHASE PATTERNS =================
 let purchasePatterns = {};
 let patternsLoaded = false;
 
@@ -317,6 +364,7 @@ export const loadPurchasePatterns = async () => {
     patternsLoaded = true;
     return { success: true };
   } catch (error) {
+    console.error('Load purchase patterns error:', error);
     return { success: false };
   }
 };
@@ -397,7 +445,8 @@ export const getLearnedSuggestions = async (currentProductId, currentCart = [], 
           suggestions.push({
             ...product,
             frequency: suggestion.frequency,
-            reason: getSuggestionReason(suggestion.frequency)
+            rank: suggestions.length + 1,
+            reason: getSuggestionReason(suggestion.frequency, suggestions.length + 1)
           });
         }
       }
@@ -405,41 +454,17 @@ export const getLearnedSuggestions = async (currentProductId, currentCart = [], 
     
     return suggestions;
   } catch (error) {
+    console.error('Get learned suggestions error:', error);
     return [];
   }
 };
 
-const getSuggestionReason = (frequency) => {
-  if (frequency >= 20) return '🔥 Frequently bought together';
-  if (frequency >= 10) return '👍 Popular combination';
-  if (frequency >= 5) return '📈 Often purchased together';
-  return '🆕 Customers also buy';
-};
-
-// ================= SHOPKEEPER NOTIFICATIONS =================
-let lastOrderId = null;
-
-export const setCurrentUserForNotifications = (userId) => {
-  currentUserIdForNotifications = userId;
-};
-
-export const subscribeToNewOrders = (callback) => {
-  try {
-    const q = query(collection(db, 'bills'), orderBy('createdAt', 'desc'), limit(10));
-    return onSnapshot(q, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const orderData = { id: change.doc.id, ...change.doc.data() };
-          if (lastOrderId !== orderData.id && orderData.createdById !== currentUserIdForNotifications) {
-            lastOrderId = orderData.id;
-            callback(orderData);
-          }
-        }
-      });
-    });
-  } catch (error) {
-    return null;
-  }
+const getSuggestionReason = (frequency, rank) => {
+  if (rank === 1) return '🔥 Most frequently bought together';
+  if (rank === 2) return '👍 Very popular combination';
+  if (frequency >= 20) return '🌟 Frequently bought together';
+  if (frequency >= 10) return '📈 Popular combination';
+  return '💡 Customers also buy';
 };
 
 // ================= PRODUCT FUNCTIONS =================
@@ -453,7 +478,9 @@ export const addProduct = async (productData) => {
       category: productData.category?.trim() || 'General',
       stock: parseInt(productData.stock) || 0,
       salesCount: 0,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      discountApplied: false,
+      discountPercent: 0
     });
     return { success: true, id: docRef.id };
   } catch (error) {
@@ -467,7 +494,12 @@ export const getProducts = async () => {
     const products = [];
     snapshot.forEach(doc => {
       const data = doc.data();
-      products.push({ id: doc.id, ...data, price: data.pricePKR || data.price || 0 });
+      products.push({ 
+        id: doc.id, 
+        ...data, 
+        price: data.pricePKR || data.price || 0,
+        discountedPrice: data.discountedPrice || data.pricePKR || data.price
+      });
     });
     return { success: true, products };
   } catch (error) {
@@ -492,6 +524,32 @@ export const updateProduct = async (productId, productData) => {
   }
 };
 
+export const updateProductPrice = async (productId, newPrice, applyDiscount, discountPercent) => {
+  try {
+    const productRef = doc(db, 'products', productId);
+    const productDoc = await getDoc(productRef);
+    
+    if (productDoc.exists()) {
+      const originalPrice = productDoc.data().pricePKR || productDoc.data().price;
+      
+      await updateDoc(productRef, {
+        pricePKR: newPrice,
+        price: newPrice,
+        discountedPrice: applyDiscount ? newPrice : null,
+        discountApplied: applyDiscount,
+        discountPercent: applyDiscount ? discountPercent : 0,
+        originalPrice: applyDiscount ? originalPrice : null,
+        lastPriceUpdate: new Date().toISOString()
+      });
+      
+      return { success: true };
+    }
+    return { success: false, error: 'Product not found' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
 export const deleteProduct = async (productId) => {
   try {
     await deleteDoc(doc(db, 'products', productId));
@@ -501,7 +559,7 @@ export const deleteProduct = async (productId) => {
   }
 };
 
-// ================= BILL FUNCTIONS (UPDATED WITH ROLE-BASED DATA) =================
+// ================= BILL FUNCTIONS =================
 export const saveBill = async (billData) => {
   try {
     const counterRef = doc(db, 'counters', 'billCounter');
@@ -525,14 +583,10 @@ export const saveBill = async (billData) => {
     const userId = currentUser?.uid || 'unknown';
     const userEmail = currentUser?.email || 'unknown';
     
-    // IMPORTANT: status determines if it's a customer order or shopkeeper bill
     const status = billData.status || 'pending';
-    
-    // Calculate tax correctly
-    const subtotal = billData.subtotal || billData.total || 0;
-    const taxRate = 0.05;
-    const tax = subtotal * taxRate;
-    const totalWithTax = subtotal + tax;
+    const subtotal = billData.subtotal || 0;
+    const tax = billData.tax || (subtotal * 0.05);
+    const total = billData.total || (subtotal + tax);
     
     const docRef = await addDoc(collection(db, 'bills'), {
       ...billData,
@@ -543,11 +597,14 @@ export const saveBill = async (billData) => {
       status: status,
       subtotal: subtotal,
       tax: tax,
-      total: totalWithTax
+      total: total
     });
+    
+    console.log(`✅ Bill saved: ${billNumber} by ${userEmail} (${userId}) - Status: ${status}`);
     
     return { success: true, billId: docRef.id, billNumber: billNumber };
   } catch (error) {
+    console.error('Save bill error:', error);
     return { success: false, error: error.message };
   }
 };
@@ -559,23 +616,21 @@ export const updateBillStatus = async (billId, status) => {
       status: status,
       updatedAt: new Date().toISOString()
     });
+    console.log(`✅ Bill status updated: ${billId} -> ${status}`);
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
   }
 };
 
-// Complete bill generation with stock update
-export const completeBillAndUpdateStock = async (billId, cartItems) => {
+export const confirmBillAndUpdateStock = async (billId, cartItems) => {
   try {
-    // Update stock for all products
     const stockResult = await updateBulkProductStock(cartItems);
     if (!stockResult.success) {
       return { success: false, error: stockResult.error };
     }
     
-    // Update bill status
-    const statusResult = await updateBillStatus(billId, 'completed');
+    const statusResult = await updateBillStatus(billId, 'confirmed');
     if (!statusResult.success) {
       return { success: false, error: statusResult.error };
     }
@@ -586,7 +641,6 @@ export const completeBillAndUpdateStock = async (billId, cartItems) => {
   }
 };
 
-// ✅ UPDATED: getBills - Shopkeeper sees ALL bills
 export const getBills = async () => {
   try {
     const currentUser = getCurrentUser();
@@ -598,80 +652,67 @@ export const getBills = async () => {
     let bills = [];
     
     if (userRole === 'shopkeeper') {
-      // ✅ Shopkeeper: Get ALL bills from ALL customers
       const snapshot = await getDocs(collection(db, 'bills'));
       snapshot.forEach(doc => {
         bills.push({ id: doc.id, ...doc.data() });
       });
-      console.log(`🏪 Shopkeeper ${currentUser.email}: Loading ${bills.length} total bills`);
     } else {
-      // ✅ Customer: Get ONLY their own bills
       const q = query(collection(db, 'bills'), where('createdById', '==', currentUser.uid));
       const snapshot = await getDocs(q);
       snapshot.forEach(doc => {
         bills.push({ id: doc.id, ...doc.data() });
       });
-      console.log(`🛒 Customer ${currentUser.email}: Loading ${bills.length} of their bills`);
     }
     
-    // Sort by date (newest first)
-    bills.sort((a, b) => {
-      const dateA = new Date(a.createdAt);
-      const dateB = new Date(b.createdAt);
-      return dateB - dateA;
-    });
+    bills.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     
     return { success: true, bills };
   } catch (error) {
-    console.error('Error in getBills:', error);
     return { success: false, bills: [], error: error.message };
   }
 };
 
-// ✅ UPDATED: getMyOrders - For Customer to see ONLY their orders (completed only for spending)
 export const getMyOrders = async (includePending = true) => {
   try {
     const currentUser = getCurrentUser();
     if (!currentUser) return { success: true, bills: [] };
     
-    // ✅ Customer: Get bills created by this user
     const q = query(collection(db, 'bills'), where('createdById', '==', currentUser.uid));
     const snapshot = await getDocs(q);
     const bills = [];
     snapshot.forEach(doc => {
       const bill = { id: doc.id, ...doc.data() };
-      // Filter by status if needed
       if (!includePending && bill.status === 'pending') {
         return;
       }
       bills.push(bill);
     });
     
-    bills.sort((a, b) => {
-      const dateA = new Date(a.createdAt);
-      const dateB = new Date(b.createdAt);
-      return dateB - dateA;
-    });
+    bills.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     
-    console.log(`🛒 ${currentUser.email}: Found ${bills.length} orders`);
     return { success: true, bills };
   } catch (error) {
-    console.error('Error in getMyOrders:', error);
+    console.error('Get my orders error:', error);
     return { success: true, bills: [] };
   }
 };
 
-// Get customer stats (only completed orders for spending)
 export const getCustomerStats = async () => {
   try {
-    const result = await getMyOrders(false); // Only completed orders
+    const result = await getMyOrders(false);
     let totalSpent = 0;
     let totalItems = 0;
     
     if (result.success && result.bills.length > 0) {
       totalSpent = result.bills.reduce((sum, bill) => sum + (bill.total || 0), 0);
-      totalItems = result.bills.reduce((sum, bill) => sum + (bill.cart?.length || 0), 0);
+      totalItems = result.bills.reduce((sum, bill) => {
+        const billItems = bill.cart?.reduce((itemSum, item) => itemSum + (item.quantity || 1), 0) || 0;
+        return sum + billItems;
+      }, 0);
     }
+    
+    const pendingResult = await getMyOrders(true);
+    const pendingOrders = pendingResult.success ? pendingResult.bills.filter(b => b.status === 'pending').length : 0;
     
     return {
       success: true,
@@ -679,10 +720,11 @@ export const getCustomerStats = async () => {
         totalOrders: result.bills.length,
         totalSpent: totalSpent,
         totalItems: totalItems,
-        pendingOrders: 0 // Count pending separately if needed
+        pendingOrders: pendingOrders
       }
     };
   } catch (error) {
+    console.error('Customer stats error:', error);
     return { success: false, stats: {} };
   }
 };
@@ -699,7 +741,7 @@ export const getTodaySales = async () => {
     snapshot.forEach(doc => {
       const bill = doc.data();
       const createdAt = new Date(bill.createdAt);
-      if (createdAt >= today && createdAt < tomorrow && bill.status === 'completed') {
+      if (createdAt >= today && createdAt < tomorrow && bill.status === 'confirmed') {
         total += bill.total || 0;
       }
     });
@@ -715,9 +757,9 @@ export const getDashboardStats = async () => {
     const bills = await getBills();
     const products = await getProducts();
     
-    // Only count completed bills for revenue
-    const completedBills = bills.success ? bills.bills.filter(b => b.status === 'completed') : [];
-    const totalRevenue = completedBills.reduce((sum, b) => sum + (b.total || 0), 0);
+    const confirmedBills = bills.success ? bills.bills.filter(b => b.status === 'confirmed') : [];
+    const totalRevenue = confirmedBills.reduce((sum, b) => sum + (b.total || 0), 0);
+    const pendingBills = bills.success ? bills.bills.filter(b => b.status === 'pending').length : 0;
     
     return {
       success: true,
@@ -726,8 +768,8 @@ export const getDashboardStats = async () => {
         totalBills: bills.success ? bills.bills.length : 0,
         totalProducts: products.success ? products.products.length : 0,
         totalRevenue: totalRevenue,
-        completedBills: completedBills.length,
-        pendingBills: bills.success ? bills.bills.filter(b => b.status === 'pending').length : 0
+        confirmedBills: confirmedBills.length,
+        pendingBills: pendingBills
       }
     };
   } catch (error) {
@@ -736,6 +778,20 @@ export const getDashboardStats = async () => {
 };
 
 // ================= USER FUNCTIONS =================
+export const getUserRole = async () => {
+  try {
+    const user = getCurrentUser();
+    if (!user) return { success: false, role: null };
+    const userDoc = await getDoc(doc(db, 'users', user.uid));
+    if (userDoc.exists()) {
+      return { success: true, role: userDoc.data().role || 'customer' };
+    }
+    return { success: false, role: 'customer' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
 export const registerUser = async (email, password, role = 'customer', userData = {}) => {
   try {
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
@@ -743,10 +799,9 @@ export const registerUser = async (email, password, role = 'customer', userData 
       email, 
       ...userData, 
       role: role,
-      shopName: userData.shopName || (role === 'shopkeeper' ? 'My Store' : ''),
+      shopName: userData.shopName || (role === 'shopkeeper' ? 'My Store' : 'My Account'),
       createdAt: new Date().toISOString()
     });
-    setCurrentUserForNotifications(userCredential.user.uid);
     return { success: true, user: userCredential.user, role: role };
   } catch (error) {
     return { success: false, error: error.message };
@@ -756,7 +811,6 @@ export const registerUser = async (email, password, role = 'customer', userData 
 export const loginUser = async (email, password) => {
   try {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
-    setCurrentUserForNotifications(userCredential.user.uid);
     const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
     const role = userDoc.exists() ? (userDoc.data().role || 'customer') : 'customer';
     return { success: true, user: userCredential.user, role: role };
@@ -767,6 +821,10 @@ export const loginUser = async (email, password) => {
 
 export const logoutUser = async () => {
   try {
+    if (notificationUnsubscribe) {
+      notificationUnsubscribe();
+      notificationUnsubscribe = null;
+    }
     setCurrentUserForNotifications(null);
     await signOut(auth);
     return { success: true };
@@ -804,7 +862,6 @@ export const updateUserProfile = async (userId, profileData) => {
   }
 };
 
-// ================= CLEAR DATABASE FUNCTION (Shopkeeper only) =================
 export const clearAllDatabaseData = async () => {
   try {
     const currentUser = getCurrentUser();
@@ -817,20 +874,17 @@ export const clearAllDatabaseData = async () => {
       return { success: false, error: 'Only shopkeeper can clear data' };
     }
     
-    // Clear products
     const productsSnapshot = await getDocs(collection(db, 'products'));
     const batch = writeBatch(db);
     productsSnapshot.forEach(doc => {
       batch.delete(doc.ref);
     });
     
-    // Clear bills
     const billsSnapshot = await getDocs(collection(db, 'bills'));
     billsSnapshot.forEach(doc => {
       batch.delete(doc.ref);
     });
     
-    // Clear purchase patterns
     const patternsSnapshot = await getDocs(collection(db, 'purchasePatterns'));
     patternsSnapshot.forEach(doc => {
       batch.delete(doc.ref);
@@ -838,9 +892,8 @@ export const clearAllDatabaseData = async () => {
     
     await batch.commit();
     
-    // Reset counter
     const counterRef = doc(db, 'counters', 'billCounter');
-    await setDoc(counterRef, { count: 0 });
+    await setDoc(counterRef, { count: 1 });
     
     return { success: true };
   } catch (error) {
@@ -848,17 +901,170 @@ export const clearAllDatabaseData = async () => {
   }
 };
 
-// ================= EXPORTS =================
-export { auth, db, onAuthStateChanged };
-
-export default {
-  auth, db, onAuthStateChanged, formatPKR, generateDarazLink,
-  fetchMarketPrice, calculateAIDynamicDiscount, loadPurchasePatterns,
-  recordPurchaseCombination, getLearnedSuggestions, subscribeToNewOrders,
-  setCurrentUserForNotifications, addProduct, getProducts, updateProduct,
-  deleteProduct, saveBill, getBills, getTodaySales, getDashboardStats,
-  registerUser, loginUser, logoutUser, getCurrentUser, getUserData,
-  updateUserProfile, getUserRole, getMyOrders, updateBillStatus,
-  clearAllDatabaseData, updateProductStock, updateBulkProductStock,
-  completeBillAndUpdateStock, getCustomerStats
+// ================= REVIEWS SYSTEM =================
+export const submitReview = async (rating, comment) => {
+  try {
+    const currentUser = getCurrentUser();
+    if (!currentUser) {
+      return { success: false, error: 'Please login to submit review' };
+    }
+    
+    const reviewData = {
+      userId: currentUser.uid,
+      userName: currentUser.email?.split('@')[0] || 'User',
+      userEmail: currentUser.email,
+      rating: parseInt(rating),
+      comment: comment?.trim() || '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: 'active'
+    };
+    
+    const docRef = await addDoc(collection(db, 'reviews'), reviewData);
+    console.log('✅ Review submitted:', docRef.id);
+    
+    return { success: true, reviewId: docRef.id };
+  } catch (error) {
+    console.error('Submit review error:', error);
+    return { success: false, error: error.message };
+  }
 };
+
+export const updateReview = async (reviewId, rating, comment) => {
+  try {
+    const currentUser = getCurrentUser();
+    if (!currentUser) {
+      return { success: false, error: 'Please login to update review' };
+    }
+    
+    const reviewRef = doc(db, 'reviews', reviewId);
+    const reviewDoc = await getDoc(reviewRef);
+    
+    if (!reviewDoc.exists()) {
+      return { success: false, error: 'Review not found' };
+    }
+    
+    if (reviewDoc.data().userId !== currentUser.uid) {
+      return { success: false, error: 'You can only update your own review' };
+    }
+    
+    await updateDoc(reviewRef, {
+      rating: parseInt(rating),
+      comment: comment?.trim() || '',
+      updatedAt: new Date().toISOString()
+    });
+    
+    console.log('✅ Review updated:', reviewId);
+    return { success: true };
+  } catch (error) {
+    console.error('Update review error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const deleteReview = async (reviewId) => {
+  try {
+    const currentUser = getCurrentUser();
+    if (!currentUser) {
+      return { success: false, error: 'Please login' };
+    }
+    
+    const reviewRef = doc(db, 'reviews', reviewId);
+    const reviewDoc = await getDoc(reviewRef);
+    
+    if (!reviewDoc.exists()) {
+      return { success: false, error: 'Review not found' };
+    }
+    
+    if (reviewDoc.data().userId !== currentUser.uid) {
+      return { success: false, error: 'You can only delete your own review' };
+    }
+    
+    await deleteDoc(reviewRef);
+    console.log('✅ Review deleted:', reviewId);
+    return { success: true };
+  } catch (error) {
+    console.error('Delete review error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const getUserReview = async () => {
+  try {
+    const currentUser = getCurrentUser();
+    if (!currentUser) {
+      return { success: false, review: null };
+    }
+    
+    const q = query(collection(db, 'reviews'), where('userId', '==', currentUser.uid), limit(1));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      return { success: true, review: null, hasReview: false };
+    }
+    
+    let review = null;
+    snapshot.forEach(doc => {
+      review = { id: doc.id, ...doc.data() };
+    });
+    
+    return { success: true, review: review, hasReview: true };
+  } catch (error) {
+    console.error('Get user review error:', error);
+    return { success: false, review: null, hasReview: false };
+  }
+};
+
+export const getReviews = async (limitCount = 10) => {
+  try {
+    const reviewsRef = collection(db, 'reviews');
+    const q = query(reviewsRef, orderBy('createdAt', 'desc'), limit(limitCount));
+    const snapshot = await getDocs(q);
+    
+    const reviews = [];
+    let totalRating = 0;
+    
+    snapshot.forEach(doc => {
+      const review = { id: doc.id, ...doc.data() };
+      reviews.push(review);
+      totalRating += review.rating || 0;
+    });
+    
+    const averageRating = reviews.length > 0 ? totalRating / reviews.length : 0;
+    
+    return { 
+      success: true, 
+      reviews: reviews,
+      averageRating: averageRating,
+      totalReviews: reviews.length
+    };
+  } catch (error) {
+    console.error('Get reviews error:', error);
+    return { success: false, reviews: [], averageRating: 0, totalReviews: 0 };
+  }
+};
+
+export const hasUserReviewed = async () => {
+  try {
+    const currentUser = getCurrentUser();
+    if (!currentUser) return { success: false, hasReviewed: false };
+    
+    const q = query(collection(db, 'reviews'), where('userId', '==', currentUser.uid));
+    const snapshot = await getDocs(q);
+    
+    return { success: true, hasReviewed: !snapshot.empty };
+  } catch (error) {
+    return { success: false, hasReviewed: false };
+  }
+};
+
+export const getUserDisplayName = () => {
+  const currentUser = getCurrentUser();
+  if (!currentUser) return 'Guest';
+  
+  let name = currentUser.email?.split('@')[0] || 'User';
+  name = name.charAt(0).toUpperCase() + name.slice(1);
+  return name;
+};
+
+export { auth, db, onAuthStateChanged };

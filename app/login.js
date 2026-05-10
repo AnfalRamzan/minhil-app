@@ -1,4 +1,4 @@
-// app/login.js - FIXED DROPDOWN RESPONSIVE
+// app/login.js - FIXED WITH NOTIFICATION SETUP
 
 import React, { useState } from 'react';
 import { 
@@ -7,7 +7,7 @@ import {
   Modal, Dimensions
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { loginUser, registerUser } from '../config/firebase';
+import { loginUser, registerUser, setCurrentUserForNotifications } from '../config/firebase';
 import { Ionicons } from '@expo/vector-icons';
 
 const { width, height } = Dimensions.get('window');
@@ -49,6 +49,8 @@ export default function Login() {
         setLoading(false);
         return;
       }
+      // Set current user for notifications
+      setCurrentUserForNotifications(result.user.uid);
       Alert.alert('Success', `Welcome ${result.role === 'shopkeeper' ? 'Shopkeeper' : 'Customer'}!`);
       router.replace('/(tabs)/billing');
     } else {

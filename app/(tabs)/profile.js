@@ -1,34 +1,32 @@
-// app/(tabs)/profile.js - COMPLETE UPDATED (Customer/Shopkeeper Separate)
+// app/(tabs)/profile.js - COMPLETE FIXED VERSION WITH FIREBASE SYNC
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, Text, TouchableOpacity, StyleSheet, Alert, 
-  Image, ScrollView, Switch, Modal, TextInput, ActivityIndicator, 
-  Share, Platform, Linking
+  Image, ScrollView, Modal, TextInput, ActivityIndicator 
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { 
   logoutUser, 
-  getTodaySales, 
-  getBills, 
   getProducts, 
   getCurrentUser, 
   getUserData, 
   updateUserProfile, 
-  getDashboardStats, 
   formatPKR,
-  clearAllDatabaseData,
   getUserRole,
-  getCustomerStats
+  getCustomerStats,
+  getDashboardStats,
+  clearAllDatabaseData,
+  updateProfileImage,
+  getProfileImage,
+  setCurrentUserForNotifications
 } from '../../config/firebase';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
 
 export default function Profile() {
   const router = useRouter();
   const [profileImage, setProfileImage] = useState(null);
-  const [notifications, setNotifications] = useState(true);
   const [shopName, setShopName] = useState('');
   const [showAbout, setShowAbout] = useState(false);
   const [stats, setStats] = useState({ todaySales: 0, totalBills: 0, totalProducts: 0, totalRevenue: 0 });
@@ -36,22 +34,11 @@ export default function Profile() {
   const [userEmail, setUserEmail] = useState('');
   const [editShopModal, setEditShopModal] = useState(false);
   const [tempShopName, setTempShopName] = useState('');
-  const [showSecurity, setShowSecurity] = useState(false);
-  const [showDataManagement, setShowDataManagement] = useState(false);
-  const [showEditSettingsModal, setShowEditSettingsModal] = useState(false);
-  const [taxRate, setTaxRate] = useState('5');
-  const [currency, setCurrency] = useState('PKR');
-  const [dateFormat, setDateFormat] = useState('DD/MM/YYYY');
-  const [showCurrencyModal, setShowCurrencyModal] = useState(false);
-  const [showDateFormatModal, setShowDateFormatModal] = useState(false);
-  const [appVersion, setAppVersion] = useState('2.0.0');
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [showClearDataConfirm, setShowClearDataConfirm] = useState(false);
-  const [clearingData, setClearingData] = useState(false);
   const [userRole, setUserRole] = useState('customer');
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [clearingData, setClearingData] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
   
-  // ✅ Customer ke liye alag stats
   const [customerPersonalStats, setCustomerPersonalStats] = useState({
     myOrders: 0,
     myTotalSpent: 0,
@@ -59,37 +46,33 @@ export default function Profile() {
     myPendingOrders: 0
   });
 
-  const currencies = ['PKR', 'USD', 'EUR', 'GBP'];
-  const dateFormats = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'];
-
   useFocusEffect(
     useCallback(() => {
-      loadAllData();
-      loadUserRole();
+      loadProfileData();
     }, [])
   );
 
-  const loadUserRole = async () => {
-    const result = await getUserRole();
-    if (result.success) {
-      setUserRole(result.role);
-    }
-  };
-
-  const loadAllData = async () => {
+  const loadProfileData = async () => {
     setLoading(true);
-    if (userRole === 'shopkeeper') {
-      await loadStats();  // Shopkeeper ka full stats
-    } else {
-      await loadCustomerStats();  // Customer ka personal stats
+    try {
+      const roleResult = await getUserRole();
+      const role = roleResult.success ? roleResult.role : 'customer';
+      setUserRole(role);
+      
+      if (role === 'shopkeeper') {
+        await loadStats();
+      } else {
+        await loadCustomerStats();
+      }
+      
+      await loadUserData();
+    } catch (error) {
+      console.log('Profile load error:', error);
+    } finally {
+      setLoading(false);
     }
-    await loadUserData();
-    await loadPreferences();
-    await loadAppSettings();
-    setLoading(false);
   };
 
-  // ✅ Shopkeeper ke liye - Full store stats
   const loadStats = async () => {
     try {
       const dashboardStats = await getDashboardStats();
@@ -100,43 +83,30 @@ export default function Profile() {
           totalProducts: dashboardStats.stats.totalProducts || 0,
           totalRevenue: dashboardStats.stats.totalRevenue || 0,
         });
-      } else {
-        const salesResult = await getTodaySales();
-        const billsResult = await getBills();
-        const productsResult = await getProducts();
-        
-        setStats({
-          todaySales: salesResult.success ? salesResult.total : 0,
-          totalBills: billsResult.success ? billsResult.bills.length : 0,
-          totalProducts: productsResult.success ? productsResult.products.length : 0,
-          totalRevenue: 0,
-        });
       }
     } catch (error) {
       console.log('Load stats error:', error);
     }
   };
 
-  // ✅ Customer ke liye - Sirf apne personal stats (Completed orders only)
   const loadCustomerStats = async () => {
     try {
       const customerStats = await getCustomerStats();
       if (customerStats.success) {
         setCustomerPersonalStats({
-          myOrders: customerStats.stats.totalOrders || 0,  // Sirf completed orders
+          myOrders: customerStats.stats.totalOrders || 0,
           myTotalSpent: customerStats.stats.totalSpent || 0,
           myItems: customerStats.stats.totalItems || 0,
           myPendingOrders: customerStats.stats.pendingOrders || 0
         });
       }
       
-      // Sirf products count ke liye - Customer ko bhi products dekhne hain
       const productsResult = await getProducts();
       setStats({
-        todaySales: 0,  // ✅ Customer ke liye 0 - show nahi karna
-        totalBills: 0,   // ✅ Customer ke liye 0 - show nahi karna
+        todaySales: 0,
+        totalBills: 0,
         totalProducts: productsResult.success ? productsResult.products.length : 0,
-        totalRevenue: 0,  // ✅ Customer ke liye 0 - show nahi karna
+        totalRevenue: 0,
       });
     } catch (error) {
       console.log('Load customer stats error:', error);
@@ -149,47 +119,33 @@ export default function Profile() {
       if (user) {
         setUserEmail(user.email);
         
-        let savedShopName = await AsyncStorage.getItem('shopName');
-        if (!savedShopName) {
-          const userData = await getUserData(user.uid);
-          if (userData.success && userData.userData?.shopName) {
-            savedShopName = userData.userData.shopName;
-          } else {
+        // Load shop name from Firebase first
+        const userData = await getUserData(user.uid);
+        if (userData.success && userData.userData?.shopName) {
+          setShopName(userData.userData.shopName);
+          await AsyncStorage.setItem('shopName', userData.userData.shopName);
+        } else {
+          // Fallback to AsyncStorage
+          let savedShopName = await AsyncStorage.getItem('shopName');
+          if (!savedShopName) {
             savedShopName = userRole === 'shopkeeper' ? 'My Store' : 'My Account';
           }
+          setShopName(savedShopName);
         }
-        setShopName(savedShopName);
         
-        const savedImage = await AsyncStorage.getItem('profileImage');
-        if (savedImage) setProfileImage(savedImage);
+        // Load profile image from Firebase
+        const imageResult = await getProfileImage(user.uid);
+        if (imageResult.success && imageResult.imageUri) {
+          setProfileImage(imageResult.imageUri);
+          await AsyncStorage.setItem('profileImage', imageResult.imageUri);
+        } else {
+          // Fallback to AsyncStorage
+          const savedImage = await AsyncStorage.getItem('profileImage');
+          if (savedImage) setProfileImage(savedImage);
+        }
       }
     } catch (error) {
       console.log('Load user data error:', error);
-    }
-  };
-
-  const loadPreferences = async () => {
-    try {
-      const savedNotifications = await AsyncStorage.getItem('notifications');
-      if (savedNotifications !== null) setNotifications(savedNotifications === 'true');
-    } catch (error) {
-      console.log('Load preferences error:', error);
-    }
-  };
-
-  const loadAppSettings = async () => {
-    try {
-      const savedTaxRate = await AsyncStorage.getItem('taxRate');
-      const savedCurrency = await AsyncStorage.getItem('currency');
-      const savedDateFormat = await AsyncStorage.getItem('dateFormat');
-      const savedVersion = await AsyncStorage.getItem('appVersion');
-      
-      if (savedTaxRate) setTaxRate(savedTaxRate);
-      if (savedCurrency) setCurrency(savedCurrency);
-      if (savedDateFormat) setDateFormat(savedDateFormat);
-      if (savedVersion) setAppVersion(savedVersion);
-    } catch (error) {
-      console.log('Load app settings error:', error);
     }
   };
 
@@ -204,9 +160,9 @@ export default function Profile() {
       }
       
       setEditShopModal(false);
-      Alert.alert('Success', 'Shop name updated successfully!');
+      Alert.alert('Success', userRole === 'shopkeeper' ? 'Shop name updated!' : 'Name updated!');
     } else {
-      Alert.alert('Error', 'Please enter a shop name');
+      Alert.alert('Error', 'Please enter a name');
     }
   };
 
@@ -226,179 +182,118 @@ export default function Profile() {
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
+        setUploadingImage(true);
         const imageUri = result.assets[0].uri;
         setProfileImage(imageUri);
+        
+        // Save to AsyncStorage
         await AsyncStorage.setItem('profileImage', imageUri);
+        
+        // Save to Firebase
+        const user = getCurrentUser();
+        if (user) {
+          const updateResult = await updateProfileImage(user.uid, imageUri);
+          if (!updateResult.success) {
+            console.log('Failed to save image to Firebase:', updateResult.error);
+          }
+        }
+        
         Alert.alert('Success', 'Profile image updated successfully!');
       }
     } catch (error) {
       console.log('Image picker error:', error);
       Alert.alert('Error', 'Could not pick image. Please try again.');
+    } finally {
+      setUploadingImage(false);
     }
   };
 
-  const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: async () => {
-          await logoutUser();
-          await AsyncStorage.clear();
-          router.replace('/login');
-        }
-      }
-    ]);
-  };
-
-  const toggleNotifications = async (value) => {
-    setNotifications(value);
-    await AsyncStorage.setItem('notifications', value.toString());
-    
-    if (value) {
-      Alert.alert('✅ Notifications Enabled', 'You will receive bill updates and offers');
-    } else {
-      Alert.alert('🔕 Notifications Disabled', 'You won\'t receive any notifications');
-    }
-  };
-
-  const saveAppSettings = async () => {
-    try {
-      await AsyncStorage.setItem('taxRate', taxRate);
-      await AsyncStorage.setItem('currency', currency);
-      await AsyncStorage.setItem('dateFormat', dateFormat);
-      
-      Alert.alert('Success', 'App settings saved successfully!');
-      setShowEditSettingsModal(false);
-    } catch (error) {
-      Alert.alert('Error', 'Could not save settings');
-    }
-  };
-
-  const exportToCSV = async () => {
-    setExporting(true);
-    try {
-      const billsResult = await getBills();
-      const productsResult = await getProducts();
-      
-      let csvContent = '';
-      
-      csvContent += '=== BILLINGEASE EXPORT REPORT ===\n';
-      csvContent += `Export Date: ${new Date().toLocaleString()}\n`;
-      csvContent += `Shop Name: ${shopName}\n`;
-      csvContent += `Email: ${userEmail}\n`;
-      csvContent += `Role: ${userRole === 'shopkeeper' ? 'Shopkeeper' : 'Customer'}\n`;
-      csvContent += '\n';
-      
-      if (userRole === 'shopkeeper') {
-        csvContent += '=== BILLS REPORT ===\n';
-        csvContent += 'Bill No.,Date,Total Amount,Items Count,Status,Customer Email\n';
-        if (billsResult.success && billsResult.bills.length > 0) {
-          billsResult.bills.forEach(bill => {
-            const date = new Date(bill.createdAt).toLocaleString();
-            csvContent += `"${bill.billNumber}",${date},${bill.total},${bill.cart?.length || 0},${bill.status || 'completed'},"${bill.createdByEmail || 'N/A'}"\n`;
-          });
-        } else {
-          csvContent += 'No bills found\n';
-        }
-      }
-      
-      csvContent += '\n';
-      
-      csvContent += '=== PRODUCTS REPORT ===\n';
-      csvContent += 'Product Name,Price (PKR),Stock,Category,Sales Count\n';
-      if (productsResult.success && productsResult.products.length > 0) {
-        productsResult.products.forEach(product => {
-          csvContent += `"${product.name}",${product.pricePKR || product.price},${product.stock || 0},${product.category || 'General'},${product.salesCount || 0}\n`;
-        });
-      } else {
-        csvContent += 'No products found\n';
-      }
-      
-      csvContent += '\n';
-      
-      csvContent += '=== SUMMARY ===\n';
-      if (userRole === 'shopkeeper') {
-        csvContent += `Total Bills,${stats.totalBills}\n`;
-        csvContent += `Total Revenue,${formatPKR(stats.totalRevenue)}\n`;
-        csvContent += `Today\'s Sales,${formatPKR(stats.todaySales)}\n`;
-      } else {
-        csvContent += `My Orders,${customerPersonalStats.myOrders}\n`;
-        csvContent += `My Total Spent,${formatPKR(customerPersonalStats.myTotalSpent)}\n`;
-        csvContent += `My Items Bought,${customerPersonalStats.myItems}\n`;
-      }
-      csvContent += `Total Products,${stats.totalProducts}\n`;
-      
-      const fileName = `BillingEase_Export_${Date.now()}.csv`;
-      const filePath = `${FileSystem.documentDirectory}${fileName}`;
-      
-      await FileSystem.writeAsStringAsync(filePath, csvContent, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      
-      await Share.share({
-        title: 'BillingEase Export',
-        message: 'Here is your exported data from BillingEase',
-        url: filePath,
-      });
-      
-      Alert.alert('Success', 'Data exported successfully!');
-      setShowExportModal(false);
-    } catch (error) {
-      console.log('Export error:', error);
-      Alert.alert('Error', 'Could not export data');
-    }
-    setExporting(false);
-  };
-
-  const clearAllData = async () => {
-    setClearingData(true);
-    try {
-      const result = await clearAllDatabaseData();
-      if (result.success) {
-        setStats({ todaySales: 0, totalBills: 0, totalProducts: 0, totalRevenue: 0 });
-        Alert.alert('Success', 'All database data cleared successfully!\n\nAdd new products to get started.');
-      } else {
-        Alert.alert('Error', result.error);
-      }
-    } catch (error) {
-      Alert.alert('Error', 'Could not clear data');
-    }
-    setClearingData(false);
-    setShowClearDataConfirm(false);
-  };
-
-  const clearLocalData = async () => {
+  const removeProfileImage = async () => {
     Alert.alert(
-      '⚠️ Clear Local Data',
-      'This will clear all local settings (notifications, etc.). Cloud data will remain safe.\n\nAre you sure?',
+      'Remove Image',
+      'Are you sure you want to remove your profile image?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Clear',
+          text: 'Remove',
           style: 'destructive',
           onPress: async () => {
-            await AsyncStorage.clear();
             setProfileImage(null);
-            setShopName(userRole === 'shopkeeper' ? 'My Store' : 'My Account');
-            setNotifications(true);
-            setTaxRate('5');
-            setCurrency('PKR');
-            setDateFormat('DD/MM/YYYY');
-            Alert.alert('Success', 'All local data cleared successfully!');
-            setShowDataManagement(false);
+            await AsyncStorage.removeItem('profileImage');
+            
+            const user = getCurrentUser();
+            if (user) {
+              await updateProfileImage(user.uid, null);
+            }
+            
+            Alert.alert('Success', 'Profile image removed');
           }
         }
       ]
     );
   };
 
-  if (loading) {
+  const handleClearDatabase = () => {
+    Alert.alert(
+      '⚠️ DELETE ALL DATA',
+      'This action will permanently delete:\n\n❌ All Products\n❌ All Orders/Bills\n❌ All Purchase Patterns\n❌ All Sales Records\n\nThis cannot be undone!\n\nAre you absolutely sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'YES, DELETE ALL', 
+          style: 'destructive',
+          onPress: async () => {
+            setClearingData(true);
+            try {
+              const result = await clearAllDatabaseData();
+              if (result.success) {
+                Alert.alert(
+                  '✅ Success', 
+                  'All data has been cleared successfully!\n\nPlease refresh the app.',
+                  [{ text: 'OK', onPress: () => loadProfileData() }]
+                );
+              } else {
+                Alert.alert('Error', result.error || 'Failed to clear data');
+              }
+            } catch (error) {
+              Alert.alert('Error', 'Something went wrong');
+            } finally {
+              setClearingData(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleLogout = async () => {
+    Alert.alert('Logout', 'Are you sure you want to logout?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Logout',
+        style: 'destructive',
+        onPress: async () => {
+          setLoggingOut(true);
+          // Clear notification user
+          setCurrentUserForNotifications(null);
+          await logoutUser();
+          await AsyncStorage.clear();
+          router.replace('/login');
+          setLoggingOut(false);
+        }
+      }
+    ]);
+  };
+
+  if (loading || loggingOut || clearingData || uploadingImage) {
     return (
       <View style={styles.centerContainer}>
         <ActivityIndicator size="large" color="#1a73e8" />
-        <Text style={styles.loadingText}>Loading Profile...</Text>
+        <Text style={styles.loadingText}>
+          {uploadingImage ? 'Uploading Image...' : 
+           clearingData ? 'Clearing Data...' : 
+           loggingOut ? 'Logging out...' : 'Loading Profile...'}
+        </Text>
       </View>
     );
   }
@@ -407,7 +302,7 @@ export default function Profile() {
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* Header Section */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.imageContainer} onPress={pickImage}>
+        <TouchableOpacity style={styles.imageContainer} onPress={pickImage} onLongPress={removeProfileImage}>
           {profileImage ? (
             <Image source={{ uri: profileImage }} style={styles.profileImage} />
           ) : (
@@ -421,6 +316,7 @@ export default function Profile() {
             <Text style={styles.cameraIconText}>📷</Text>
           </View>
         </TouchableOpacity>
+        <Text style={styles.hintText}>(Tap to change, Long press to remove)</Text>
         
         <Text style={styles.shopName}>{shopName}</Text>
         
@@ -442,9 +338,8 @@ export default function Profile() {
         </View>
       </View>
 
-      {/* ✅ STATS SECTION - ROLE BASED */}
+      {/* STATS SECTION - ROLE BASED */}
       {userRole === 'shopkeeper' ? (
-        // ========== SHOPKEEPER STATS ==========
         <View style={styles.statsContainer}>
           <View style={styles.statCard}>
             <Text style={styles.statNumber}>{formatPKR(stats.todaySales)}</Text>
@@ -460,7 +355,6 @@ export default function Profile() {
           </View>
         </View>
       ) : (
-        // ========== CUSTOMER PERSONAL STATS ==========
         <View style={styles.customerStatsContainer}>
           <View style={styles.customerStatCard}>
             <Text style={styles.customerStatNumber}>{customerPersonalStats.myOrders}</Text>
@@ -480,7 +374,7 @@ export default function Profile() {
         </View>
       )}
 
-      {/* ✅ EXTRA INFO FOR CUSTOMER - Pending Orders Note */}
+      {/* Pending Orders Note for Customer */}
       {userRole === 'customer' && customerPersonalStats.myPendingOrders > 0 && (
         <View style={styles.pendingInfoCard}>
           <Text style={styles.pendingInfoIcon}>⏳</Text>
@@ -493,51 +387,23 @@ export default function Profile() {
         </View>
       )}
 
-      {/* Preferences Section */}
+      {/* Menu Section */}
       <View style={styles.menuSection}>
-        <Text style={styles.sectionTitle}>⚙️ Preferences</Text>
-        
-        <View style={styles.menuItem}>
-          <View style={styles.menuIcon}>
-            <Text style={styles.menuIconText}>🔔</Text>
-          </View>
-          <Text style={styles.menuText}>Notifications</Text>
-          <Switch
-            value={notifications}
-            onValueChange={toggleNotifications}
-            trackColor={{ false: '#ddd', true: '#1a73e8' }}
-            thumbColor={notifications ? '#fff' : '#f4f3f4'}
-          />
-        </View>
-      </View>
+        <Text style={styles.sectionTitle}>📱 Menu</Text>
 
-      {/* General Section */}
-      <View style={styles.menuSection}>
-        <Text style={styles.sectionTitle}>📱 General</Text>
-        
-        <TouchableOpacity style={styles.menuItem} onPress={() => setShowEditSettingsModal(true)}>
-          <View style={styles.menuIcon}>
-            <Text style={styles.menuIconText}>⚙️</Text>
-          </View>
-          <Text style={styles.menuText}>App Settings</Text>
-          <Text style={styles.menuArrow}>→</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.menuItem} onPress={() => setShowSecurity(true)}>
-          <View style={styles.menuIcon}>
-            <Text style={styles.menuIconText}>🔒</Text>
-          </View>
-          <Text style={styles.menuText}>Security</Text>
-          <Text style={styles.menuArrow}>→</Text>
-        </TouchableOpacity>
-
-        {/* Data Management - Only for Shopkeeper */}
+        {/* CLEAR DATABASE BUTTON - ONLY FOR SHOPKEEPER */}
         {userRole === 'shopkeeper' && (
-          <TouchableOpacity style={styles.menuItem} onPress={() => setShowDataManagement(true)}>
+          <TouchableOpacity 
+            style={[styles.menuItem, styles.dangerItem]} 
+            onPress={handleClearDatabase}
+            disabled={clearingData}
+          >
             <View style={styles.menuIcon}>
-              <Text style={styles.menuIconText}>📊</Text>
+              <Text style={styles.menuIconText}>🗑️</Text>
             </View>
-            <Text style={styles.menuText}>Data Management</Text>
+            <Text style={[styles.menuText, styles.dangerText]}>
+              {clearingData ? 'Clearing Database...' : 'Clear All Database'}
+            </Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
         )}
@@ -558,8 +424,6 @@ export default function Profile() {
           <Text style={styles.menuArrow}>→</Text>
         </TouchableOpacity>
       </View>
-
-      {/* ========== MODALS (Same as before) ========== */}
 
       {/* Edit Shop Name Modal */}
       <Modal visible={editShopModal} transparent={true} animationType="fade">
@@ -589,212 +453,6 @@ export default function Profile() {
         </View>
       </Modal>
 
-      {/* App Settings Modal */}
-      <Modal visible={showEditSettingsModal} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '85%' }]}>
-            <Text style={styles.modalTitle}>App Settings</Text>
-            
-            <TouchableOpacity style={styles.settingItem} onPress={() => {
-              Alert.alert('Tax Rate', 'Set GST percentage', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: '0%', onPress: () => setTaxRate('0') },
-                { text: '5%', onPress: () => setTaxRate('5') },
-                { text: '10%', onPress: () => setTaxRate('10') },
-                { text: '15%', onPress: () => setTaxRate('15') },
-                { text: '18%', onPress: () => setTaxRate('18') },
-              ]);
-            }}>
-              <Text style={styles.settingLabel}>Tax Rate (GST)</Text>
-              <Text style={styles.settingValue}>{taxRate}%</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.settingItem} onPress={() => setShowCurrencyModal(true)}>
-              <Text style={styles.settingLabel}>Currency</Text>
-              <Text style={styles.settingValue}>{currency}</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.settingItem} onPress={() => setShowDateFormatModal(true)}>
-              <Text style={styles.settingLabel}>Date Format</Text>
-              <Text style={styles.settingValue}>{dateFormat}</Text>
-            </TouchableOpacity>
-            
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.saveBtn} onPress={saveAppSettings}>
-                <Text style={styles.saveBtnText}>Save Settings</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowEditSettingsModal(false)}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Currency Modal */}
-      <Modal visible={showCurrencyModal} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Currency</Text>
-            {currencies.map((curr) => (
-              <TouchableOpacity
-                key={curr}
-                style={styles.optionItem}
-                onPress={() => {
-                  setCurrency(curr);
-                  setShowCurrencyModal(false);
-                }}
-              >
-                <Text style={styles.optionText}>{curr}</Text>
-                {currency === curr && <Text style={styles.checkMark}>✓</Text>}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Date Format Modal */}
-      <Modal visible={showDateFormatModal} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Date Format</Text>
-            {dateFormats.map((format) => (
-              <TouchableOpacity
-                key={format}
-                style={styles.optionItem}
-                onPress={() => {
-                  setDateFormat(format);
-                  setShowDateFormatModal(false);
-                }}
-              >
-                <Text style={styles.optionText}>{format}</Text>
-                {dateFormat === format && <Text style={styles.checkMark}>✓</Text>}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Security Modal */}
-      <Modal visible={showSecurity} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>🔒 Security</Text>
-            
-            <View style={styles.settingItem}>
-              <Text style={styles.settingLabel}>Biometric Login</Text>
-              <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'Biometric login coming in next update')}>
-                <Text style={[styles.settingValue, { color: '#1a73e8' }]}>Setup →</Text>
-              </TouchableOpacity>
-            </View>
-            
-            <View style={styles.settingItem}>
-              <Text style={styles.settingLabel}>PIN Protection</Text>
-              <TouchableOpacity onPress={() => Alert.alert('Coming Soon', 'PIN protection coming in next update')}>
-                <Text style={[styles.settingValue, { color: '#1a73e8' }]}>Enable →</Text>
-              </TouchableOpacity>
-            </View>
-            
-            <View style={styles.settingItem}>
-              <Text style={styles.settingLabel}>Data Encryption</Text>
-              <Text style={[styles.settingValue, { color: '#34a853' }]}>Enabled ✓</Text>
-            </View>
-            
-            <View style={styles.settingItem}>
-              <Text style={styles.settingLabel}>Firebase Security</Text>
-              <Text style={[styles.settingValue, { color: '#34a853' }]}>Active ✓</Text>
-            </View>
-            
-            <TouchableOpacity style={styles.closeButton} onPress={() => setShowSecurity(false)}>
-              <Text style={styles.closeButtonText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Data Management Modal - Only for Shopkeeper */}
-      {userRole === 'shopkeeper' && (
-        <Modal visible={showDataManagement} transparent={true} animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>📊 Data Management</Text>
-              
-              <TouchableOpacity style={styles.dataOption} onPress={() => setShowExportModal(true)}>
-                <Text style={styles.dataOptionText}>📤 Export Data to CSV</Text>
-                <Text style={styles.dataOptionSub}>Export bills, products, and summary</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity style={styles.dataOption} onPress={() => setShowClearDataConfirm(true)}>
-                <Text style={[styles.dataOptionText, { color: '#dc3545' }]}>🗑️ Clear All Database Data</Text>
-                <Text style={styles.dataOptionSub}>Delete all products, bills, and patterns (irreversible)</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity style={styles.dataOption} onPress={clearLocalData}>
-                <Text style={[styles.dataOptionText, { color: '#f39c12' }]}>🗑️ Clear Local Settings Only</Text>
-                <Text style={styles.dataOptionSub}>Keep products/bills, reset app preferences</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity style={styles.closeButton} onPress={() => setShowDataManagement(false)}>
-                <Text style={styles.closeButtonText}>Close</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
-      )}
-
-      {/* Clear Data Confirmation Modal */}
-      <Modal visible={showClearDataConfirm} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: '#fff3e0' }]}>
-            <Text style={[styles.modalTitle, { color: '#dc3545' }]}>⚠️ Warning!</Text>
-            <Text style={styles.clearWarningText}>
-              This will permanently delete:
-            </Text>
-            <Text style={styles.clearWarningList}>
-              • All products in database\n
-              • All bill history\n
-              • All purchase patterns (AI learning data)
-            </Text>
-            <Text style={styles.clearWarningConfirm}>
-              This action CANNOT be undone!
-            </Text>
-            
-            {clearingData ? (
-              <ActivityIndicator size="large" color="#dc3545" style={{ marginVertical: 20 }} />
-            ) : (
-              <View style={styles.modalButtons}>
-                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: '#dc3545' }]} onPress={clearAllData}>
-                  <Text style={styles.saveBtnText}>Yes, Delete All</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.cancelBtn, { backgroundColor: '#666' }]} onPress={() => setShowClearDataConfirm(false)}>
-                  <Text style={styles.cancelBtnText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Export Modal */}
-      <Modal visible={showExportModal} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>📤 Export Data</Text>
-            <Text style={styles.exportText}>Export your data as CSV file</Text>
-            
-            <TouchableOpacity style={styles.exportOption} onPress={exportToCSV} disabled={exporting}>
-              <Text style={styles.exportOptionText}>
-                {exporting ? '⏳ Exporting...' : '📄 Export as CSV'}
-              </Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowExportModal(false)}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
       {/* About Modal */}
       <Modal visible={showAbout} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
@@ -804,7 +462,7 @@ export default function Profile() {
               <Text style={styles.aboutLogoIcon}>🧠</Text>
             </View>
             <Text style={styles.aboutName}>BillingEase</Text>
-            <Text style={styles.aboutVersion}>Version {appVersion}</Text>
+            <Text style={styles.aboutVersion}>Version 2.0.0</Text>
             <Text style={styles.aboutDescription}>
               AI Powered Smart Billing System for Modern Retail Stores
             </Text>
@@ -815,7 +473,7 @@ export default function Profile() {
               <Text style={styles.featureItem}>🎯 Smart Product Suggestions</Text>
               <Text style={styles.featureItem}>📈 Real-time Analytics</Text>
               <Text style={styles.featureItem}>☁️ Cloud Sync & Backup</Text>
-              <Text style={styles.featureItem}>👥 Role-Based Access (Customer/Shopkeeper)</Text>
+              <Text style={styles.featureItem}>👥 Role-Based Access</Text>
             </View>
             <Text style={styles.copyright}>© 2025-2026 BillingEase</Text>
             <Text style={styles.credits}>Developed with ❤️ in Pakistan</Text>
@@ -847,12 +505,13 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 5,
   },
-  imageContainer: { position: 'relative', marginBottom: 12 },
+  imageContainer: { position: 'relative', marginBottom: 8 },
   profileImage: { width: 100, height: 100, borderRadius: 50, borderWidth: 3, borderColor: '#fff' },
   profileImagePlaceholder: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#fff' },
   profileImageText: { fontSize: 45 },
   cameraIcon: { position: 'absolute', bottom: 0, right: 0, backgroundColor: '#fff', borderRadius: 20, padding: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 3 },
   cameraIconText: { fontSize: 14 },
+  hintText: { fontSize: 10, color: 'rgba(255,255,255,0.7)', marginBottom: 8 },
   shopName: { fontSize: 24, fontWeight: 'bold', color: '#fff', marginTop: 8 },
   editShopButton: { marginTop: 6, paddingHorizontal: 12, paddingVertical: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 20 },
   editShopText: { fontSize: 12, color: '#fff' },
@@ -879,6 +538,7 @@ const styles = StyleSheet.create({
   pendingInfoText: { fontSize: 13, color: '#e67e22', fontWeight: '500', textAlign: 'center' },
   pendingInfoSub: { fontSize: 10, color: '#999', marginTop: 4, textAlign: 'center' },
   
+  // Menu Section
   menuSection: { backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 16, paddingHorizontal: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2, marginBottom: 20 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#1a73e8', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   menuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
@@ -888,7 +548,10 @@ const styles = StyleSheet.create({
   menuArrow: { fontSize: 16, color: '#ccc' },
   logoutItem: { borderBottomWidth: 0 },
   logoutText: { color: '#dc3545' },
+  dangerItem: { borderBottomWidth: 1, borderBottomColor: '#fee8e8' },
+  dangerText: { color: '#dc3545', fontWeight: '500' },
   
+  // Modal Styles
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 24, width: '90%' },
   modalTitle: { fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 20, color: '#1a73e8' },
@@ -899,25 +562,7 @@ const styles = StyleSheet.create({
   cancelBtn: { flex: 1, backgroundColor: '#dc3545', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
   cancelBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   
-  settingItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  settingLabel: { fontSize: 16, color: '#333' },
-  settingValue: { fontSize: 16, color: '#666' },
-  optionItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  optionText: { fontSize: 16, color: '#333' },
-  checkMark: { fontSize: 18, color: '#34a853', fontWeight: 'bold' },
-  
-  dataOption: { paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  dataOptionText: { fontSize: 16, color: '#1a73e8', fontWeight: '500' },
-  dataOptionSub: { fontSize: 11, color: '#999', marginTop: 4 },
-  
-  clearWarningText: { fontSize: 14, color: '#333', marginBottom: 12 },
-  clearWarningList: { fontSize: 13, color: '#666', marginBottom: 12, lineHeight: 20 },
-  clearWarningConfirm: { fontSize: 14, fontWeight: 'bold', color: '#dc3545', marginBottom: 20, textAlign: 'center' },
-  
-  exportText: { fontSize: 14, color: '#666', textAlign: 'center', marginBottom: 20 },
-  exportOption: { backgroundColor: '#e8f0fe', padding: 16, borderRadius: 12, marginBottom: 12, alignItems: 'center' },
-  exportOptionText: { fontSize: 16, color: '#1a73e8', fontWeight: '500' },
-  
+  // About Modal Styles
   aboutLogo: { alignItems: 'center', marginBottom: 16 },
   aboutLogoIcon: { fontSize: 60 },
   aboutName: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', color: '#1a73e8' },
