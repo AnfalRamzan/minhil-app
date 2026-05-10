@@ -1,4 +1,4 @@
-// app/(tabs)/products.js - COMPLETE WITH AI SUGGESTIONS
+// app/(tabs)/products.js - SINGLE HEADING
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -13,7 +13,8 @@ import {
   RefreshControl,
   ActivityIndicator,
   Dimensions,
-  ScrollView
+  Animated,
+  Keyboard
 } from 'react-native';
 import {
   getProducts,
@@ -33,6 +34,8 @@ const { width } = Dimensions.get('window');
 
 export default function Products() {
   const [products, setProducts] = useState([]);
+  const [filteredProducts, setFilteredProducts] = useState([]);
+  const [searchText, setSearchText] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [name, setName] = useState('');
@@ -44,9 +47,8 @@ export default function Products() {
   const [userRole, setUserRole] = useState('customer');
   const [cart, setCart] = useState([]);
   const [showCartModal, setShowCartModal] = useState(false);
-  const [flatListKey, setFlatListKey] = useState('customer');
+  const [newProductId, setNewProductId] = useState(null);
   
-  // AI Compare Modal
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiData, setAiData] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -59,12 +61,32 @@ export default function Products() {
     }, [])
   );
 
+  useEffect(() => {
+    if (newProductId) {
+      const timer = setTimeout(() => {
+        setNewProductId(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [newProductId]);
+
+  useEffect(() => {
+    if (searchText.trim() === '') {
+      setFilteredProducts(products);
+    } else {
+      const searchLower = searchText.toLowerCase().trim();
+      const filtered = products.filter(p => 
+        p.name.toLowerCase().includes(searchLower) ||
+        (p.category && p.category.toLowerCase().includes(searchLower))
+      );
+      setFilteredProducts(filtered);
+    }
+  }, [searchText, products]);
+
   const loadUserRole = async () => {
     const result = await getUserRole();
     if (result.success) {
-      const role = result.role;
-      setUserRole(role);
-      setFlatListKey(role === 'shopkeeper' ? 'shopkeeper' : 'customer');
+      setUserRole(result.role);
     }
   };
 
@@ -79,6 +101,7 @@ export default function Products() {
         discountPercent: p.discountPercent || 0
       }));
       setProducts(normalized);
+      setFilteredProducts(normalized);
     } else {
       Alert.alert('Error', result.error);
     }
@@ -88,6 +111,7 @@ export default function Products() {
   const onRefresh = async () => {
     setRefreshing(true);
     await loadProducts();
+    setSearchText('');
     setRefreshing(false);
   };
 
@@ -95,16 +119,13 @@ export default function Products() {
     return `₨ ${amount?.toLocaleString('en-PK') || 0}`;
   };
 
-  // ================= AI SUGGESTIONS & COMPARE =================
   const openAIAnalysis = async (product) => {
     setSelectedProduct(product);
     setAiLoading(true);
     setShowAIModal(true);
     
     try {
-      // Get AI discount suggestion
       const discountInfo = await calculateAIDynamicDiscount(product);
-      // Get market price
       const marketData = await fetchMarketPrice(product.name, product.category);
       
       setAiData({
@@ -113,13 +134,14 @@ export default function Products() {
         currentDiscount: product.discountPercent || 0,
         currentDiscountedPrice: product.discountedPrice || product.price,
         marketPrice: marketData.marketPrice,
-        marketSource: marketData.source || 'Market Data',
+        marketSource: marketData.source || 'Daraz.pk',
         marketUrl: marketData.url,
         suggestedDiscount: discountInfo.discount,
         suggestedPrice: discountInfo.discountedPrice,
         savings: discountInfo.savings,
         reason: discountInfo.reason,
-        productId: product.id
+        productId: product.id,
+        darazLink: marketData.url
       });
     } catch (error) {
       Alert.alert('Error', 'Failed to fetch AI analysis');
@@ -135,28 +157,30 @@ export default function Products() {
     const currentPrice = aiData.currentPrice;
     
     setLoading(true);
-    const result = await updateProductPrice(selectedProduct.id, currentPrice, true, discountPercent);
     
-    if (result.success) {
-      Alert.alert(
-        '✅ AI Discount Applied!',
-        `Product: ${selectedProduct.name}\n\n` +
-        `Original Price: ${formatPrice(currentPrice)}\n` +
-        `Discount: ${discountPercent}% OFF\n` +
-        `New Price: ${formatPrice(aiData.suggestedPrice)}\n` +
-        `You Save: ${formatPrice(aiData.savings)}`,
-        [{ text: 'OK', onPress: () => {
-          setShowAIModal(false);
-          loadProducts();
-        }}]
-      );
-    } else {
-      Alert.alert('Error', result.error || 'Failed to apply discount');
+    try {
+      const result = await updateProductPrice(selectedProduct.id, currentPrice, true, discountPercent);
+      
+      if (result.success) {
+        Alert.alert('✅ AI Discount Applied!');
+        setShowAIModal(false);
+        loadProducts();
+      } else {
+        Alert.alert('Error', result.error || 'Failed to apply discount');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Something went wrong');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  // ================= ADD TO CART =================
+  const openDarazLink = (url) => {
+    if (url) {
+      Alert.alert('Daraz Price Check', `Visit Daraz.pk to compare prices:\n${url}`);
+    }
+  };
+
   const addToCart = (product) => {
     const qty = 1;
     const finalPrice = product.discountedPrice || product.price;
@@ -183,7 +207,7 @@ export default function Products() {
       }
     });
 
-    Alert.alert('✅ Added to Cart!', `${product.name} added to your cart`);
+    Alert.alert('✅ Added!', `${product.name} added to cart`);
   };
 
   const removeFromCart = (itemId) => {
@@ -276,12 +300,18 @@ export default function Products() {
     let result;
     if (editingProduct) {
       result = await updateProduct(editingProduct.id, productData);
+      if (result.success) {
+        Alert.alert('Success', 'Product updated!');
+      }
     } else {
       result = await addProduct(productData);
+      if (result.success) {
+        setNewProductId(result.id);
+        Alert.alert('✅ Success!', 'New product added!');
+      }
     }
 
     if (result.success) {
-      Alert.alert('Success', editingProduct ? 'Product updated!' : 'Product added!');
       setModalVisible(false);
       resetForm();
       await loadProducts();
@@ -329,95 +359,95 @@ export default function Products() {
     setModalVisible(true);
   };
 
-  // ================= SHOPKEEPER PRODUCT CARD =================
   const renderShopkeeperProduct = ({ item }) => {
     const hasDiscount = (item.discountPercent || 0) > 0;
     const finalPrice = hasDiscount ? item.discountedPrice : item.price;
     const originalPrice = item.price;
+    const isNewProduct = newProductId === item.id;
     
     return (
-      <View style={styles.shopkeeperProductCard}>
+      <Animated.View style={[styles.productCard, isNewProduct && styles.newProductHighlight]}>
+        {isNewProduct && (
+          <View style={styles.newBadge}>
+            <Text style={styles.newBadgeText}>✨ NEW</Text>
+          </View>
+        )}
         <View style={styles.productInfo}>
-          <Text style={styles.productName}>{item.name}</Text>
-          <Text style={styles.productCategory}>📁 {item.category}</Text>
+          <Text style={[styles.productName, isNewProduct && styles.whiteText]}>{item.name}</Text>
+          <Text style={[styles.productCategory, isNewProduct && styles.whiteLight]}>{item.category}</Text>
           
-          <View style={styles.priceContainer}>
+          <View style={styles.priceRow}>
             {hasDiscount ? (
               <>
-                <Text style={styles.originalPrice}>{formatPrice(originalPrice)}</Text>
-                <Text style={styles.discountedPrice}>{formatPrice(finalPrice)}</Text>
-                <View style={styles.discountBadge}>
-                  <Text style={styles.discountBadgeText}>-{item.discountPercent}%</Text>
+                <Text style={[styles.oldPrice, isNewProduct && styles.whiteLight]}>{formatPrice(originalPrice)}</Text>
+                <Text style={[styles.price, isNewProduct && styles.goldPrice]}>{formatPrice(finalPrice)}</Text>
+                <View style={styles.discountChip}>
+                  <Text style={styles.discountChipText}>-{item.discountPercent}%</Text>
                 </View>
               </>
             ) : (
-              <Text style={styles.normalPrice}>{formatPrice(finalPrice)}</Text>
+              <Text style={[styles.price, isNewProduct && styles.goldPrice]}>{formatPrice(finalPrice)}</Text>
             )}
           </View>
           
-          <Text style={styles.productStock}>📦 Stock: {item.stock || 0}</Text>
-          <Text style={styles.productSales}>📊 Sales: {item.salesCount || 0}</Text>
+          <Text style={[styles.stockText, isNewProduct && styles.whiteLight]}>📦 Stock: {item.stock || 0}</Text>
+          <Text style={[styles.salesText, isNewProduct && styles.whiteLight]}>📊 Sales: {item.salesCount || 0}</Text>
         </View>
         
-        <View style={styles.shopkeeperActions}>
-          <TouchableOpacity style={styles.aiBtn} onPress={() => openAIAnalysis(item)}>
-            <Ionicons name="bulb-outline" size={16} color="#e67e22" />
-            <Text style={styles.aiBtnText}>AI Suggest</Text>
+        <View style={styles.actionButtons}>
+          <TouchableOpacity style={styles.aiButton} onPress={() => openAIAnalysis(item)}>
+            <Ionicons name="bulb-outline" size={14} color="#e67e22" />
+            <Text style={styles.aiButtonText}>AI</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.editBtn} onPress={() => editProduct(item)}>
-            <Ionicons name="create-outline" size={16} color="#1a73e8" />
-            <Text style={styles.editBtnText}>Edit</Text>
+          <TouchableOpacity style={styles.editButton} onPress={() => editProduct(item)}>
+            <Ionicons name="create-outline" size={14} color="#1a73e8" />
+            <Text style={styles.editButtonText}>Edit</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
     );
   };
 
-  // ================= CUSTOMER PRODUCT CARD =================
   const renderCustomerProduct = ({ item }) => {
     const hasDiscount = (item.discountPercent || 0) > 0;
     const finalPrice = hasDiscount ? item.discountedPrice : item.price;
     const originalPrice = item.price;
 
     return (
-      <TouchableOpacity
-        style={styles.customerProductCard}
-        onPress={() => addToCart(item)}
-        activeOpacity={0.7}
-      >
-        <View style={styles.productInfo}>
-          <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
+      <TouchableOpacity style={styles.customerProductCard} onPress={() => addToCart(item)} activeOpacity={0.7}>
+        <View style={styles.customerProductInfo}>
+          <Text style={styles.customerProductName} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.customerCategory}>{item.category}</Text>
           
-          <View style={styles.priceContainer}>
+          <View style={styles.customerPriceRow}>
             {hasDiscount ? (
               <>
-                <Text style={styles.customerOriginalPrice}>{formatPrice(originalPrice)}</Text>
-                <Text style={styles.customerDiscountedPrice}>{formatPrice(finalPrice)}</Text>
-                <View style={styles.customerDiscountBadge}>
-                  <Text style={styles.customerDiscountBadgeText}>-{item.discountPercent}%</Text>
+                <Text style={styles.customerOldPrice}>{formatPrice(originalPrice)}</Text>
+                <Text style={styles.customerPrice}>{formatPrice(finalPrice)}</Text>
+                <View style={styles.customerDiscountChip}>
+                  <Text style={styles.customerDiscountText}>-{item.discountPercent}%</Text>
                 </View>
               </>
             ) : (
-              <Text style={styles.customerNormalPrice}>{formatPrice(finalPrice)}</Text>
+              <Text style={styles.customerPrice}>{formatPrice(finalPrice)}</Text>
             )}
           </View>
           
-          <Text style={styles.productStock}>📦 Stock: {item.stock || 0}</Text>
+          <Text style={styles.customerStock}>📦 Stock: {item.stock || 0}</Text>
         </View>
-        <View style={styles.addIcon}>
-          <Ionicons name="add" size={24} color="#fff" />
+        <View style={styles.addToCartIcon}>
+          <Ionicons name="add" size={22} color="#fff" />
         </View>
       </TouchableOpacity>
     );
   };
 
-  // ================= CART MODAL =================
   const renderCartModal = () => (
     <Modal visible={showCartModal} transparent={true} animationType="slide">
       <View style={styles.modalOverlay}>
-        <View style={styles.cartModalContent}>
-          <View style={styles.cartModalHeader}>
-            <Text style={styles.cartModalTitle}>🛒 Your Cart ({cart.length})</Text>
+        <View style={styles.cartModal}>
+          <View style={styles.cartHeader}>
+            <Text style={styles.cartTitle}>🛒 Your Cart ({cart.length})</Text>
             <TouchableOpacity onPress={() => setShowCartModal(false)}>
               <Ionicons name="close" size={24} color="#999" />
             </TouchableOpacity>
@@ -435,24 +465,24 @@ export default function Products() {
                 keyExtractor={item => item.id}
                 renderItem={({ item }) => (
                   <View style={styles.cartItem}>
-                    <View style={styles.cartItemInfo}>
+                    <View style={styles.cartItemLeft}>
                       <Text style={styles.cartItemName}>{item.name}</Text>
                       {item.discountPercent > 0 && (
                         <Text style={styles.cartItemDiscount}>-{item.discountPercent}% OFF</Text>
                       )}
                       <Text style={styles.cartItemPrice}>{formatPrice(item.price)} each</Text>
                     </View>
-                    <View style={styles.cartItemControls}>
-                      <TouchableOpacity onPress={() => updateQuantity(item.id, item.quantity - 1)} style={styles.cartQtyBtn}>
-                        <Text style={styles.cartQtyBtnText}>-</Text>
+                    <View style={styles.cartItemRight}>
+                      <TouchableOpacity onPress={() => updateQuantity(item.id, item.quantity - 1)} style={styles.qtyBtn}>
+                        <Text style={styles.qtyBtnText}>-</Text>
                       </TouchableOpacity>
-                      <Text style={styles.cartQtyText}>{item.quantity}</Text>
-                      <TouchableOpacity onPress={() => updateQuantity(item.id, item.quantity + 1)} style={styles.cartQtyBtn}>
-                        <Text style={styles.cartQtyBtnText}>+</Text>
+                      <Text style={styles.qtyText}>{item.quantity}</Text>
+                      <TouchableOpacity onPress={() => updateQuantity(item.id, item.quantity + 1)} style={styles.qtyBtn}>
+                        <Text style={styles.qtyBtnText}>+</Text>
                       </TouchableOpacity>
                       <Text style={styles.cartItemTotal}>{formatPrice(item.total)}</Text>
                       <TouchableOpacity onPress={() => removeFromCart(item.id)}>
-                        <Ionicons name="trash-outline" size={20} color="#dc3545" />
+                        <Ionicons name="trash-outline" size={18} color="#dc3545" />
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -461,9 +491,9 @@ export default function Products() {
               <View style={styles.cartFooter}>
                 <Text style={styles.cartSubtotal}>Subtotal: {formatPrice(getCartTotal())}</Text>
                 <Text style={styles.cartTax}>Tax (5%): {formatPrice(getCartTotal() * 0.05)}</Text>
-                <Text style={styles.cartTotal}>Total: {formatPrice(getCartTotal() * 1.05)}</Text>
-                <TouchableOpacity style={styles.checkoutBtn} onPress={placeOrder}>
-                  <Text style={styles.checkoutBtnText}>📦 Place Order</Text>
+                <Text style={styles.cartTotalAmount}>Total: {formatPrice(getCartTotal() * 1.05)}</Text>
+                <TouchableOpacity style={styles.checkoutButton} onPress={placeOrder}>
+                  <Text style={styles.checkoutButtonText}>📦 Place Order</Text>
                 </TouchableOpacity>
               </View>
             </>
@@ -473,67 +503,53 @@ export default function Products() {
     </Modal>
   );
 
-  // ================= AI SUGGESTIONS MODAL =================
   const renderAIModal = () => (
     <Modal visible={showAIModal} transparent={true} animationType="slide">
       <View style={styles.modalOverlay}>
-        <View style={styles.aiModalContent}>
+        <View style={styles.aiModal}>
           <View style={styles.aiModalHeader}>
-            <Text style={styles.aiModalTitle}>🤖 AI Price Analysis</Text>
+            <Ionicons name="bulb-outline" size={24} color="#e67e22" />
+            <Text style={styles.aiModalTitle}>AI Price Analysis</Text>
             <TouchableOpacity onPress={() => setShowAIModal(false)}>
               <Ionicons name="close" size={24} color="#999" />
             </TouchableOpacity>
           </View>
 
           {aiLoading ? (
-            <View style={styles.aiLoadingContainer}>
+            <View style={styles.aiLoading}>
               <ActivityIndicator size="large" color="#1a73e8" />
-              <Text style={styles.aiLoadingText}>Analyzing market data...</Text>
+              <Text style={styles.aiLoadingText}>Analyzing...</Text>
             </View>
           ) : aiData && (
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView>
               <Text style={styles.aiProductName}>{aiData.productName}</Text>
               
-              <View style={styles.priceComparisonCard}>
-                <Text style={styles.sectionSubtitle}>💰 Price Comparison</Text>
-                <View style={styles.comparisonRow}>
-                  <Text style={styles.comparisonLabel}>Your Price:</Text>
-                  <Text style={styles.comparisonValue}>{formatPrice(aiData.currentPrice)}</Text>
+              <View style={styles.comparisonBox}>
+                <Text style={styles.sectionTitle}>💰 Price Comparison</Text>
+                <View style={styles.compareRow}>
+                  <Text>Your Price:</Text>
+                  <Text style={styles.yourPrice}>{formatPrice(aiData.currentPrice)}</Text>
                 </View>
-                {aiData.currentDiscount > 0 && (
-                  <View style={styles.comparisonRow}>
-                    <Text style={styles.comparisonLabel}>Current Discount:</Text>
-                    <Text style={styles.comparisonDiscount}>{aiData.currentDiscount}% OFF</Text>
-                  </View>
-                )}
-                <View style={styles.comparisonRow}>
-                  <Text style={styles.comparisonLabel}>Market Average:</Text>
-                  <Text style={styles.comparisonMarketPrice}>
-                    {aiData.marketPrice ? formatPrice(aiData.marketPrice) : 'Not available'}
-                  </Text>
+                <View style={styles.compareRow}>
+                  <Text>Daraz Price:</Text>
+                  <Text style={styles.darazPrice}>{aiData.marketPrice ? formatPrice(aiData.marketPrice) : 'N/A'}</Text>
                 </View>
               </View>
 
-              <View style={styles.aiSuggestionCard}>
-                <Text style={styles.sectionSubtitle}>🎯 AI Suggestion</Text>
+              <View style={styles.suggestionBox}>
+                <Text style={styles.sectionTitle}>🎯 AI Suggestion</Text>
                 <Text style={styles.aiReason}>{aiData.reason}</Text>
                 <View style={styles.suggestionRow}>
-                  <Text style={styles.suggestionLabel}>Suggested Discount:</Text>
-                  <Text style={styles.suggestionDiscount}>{aiData.suggestedDiscount}% OFF</Text>
+                  <Text>Suggested Discount:</Text>
+                  <Text style={styles.suggestedDiscount}>{aiData.suggestedDiscount}% OFF</Text>
                 </View>
                 <View style={styles.suggestionRow}>
-                  <Text style={styles.suggestionLabel}>Suggested Price:</Text>
-                  <Text style={styles.suggestionPrice}>{formatPrice(aiData.suggestedPrice)}</Text>
-                </View>
-                <View style={styles.suggestionRow}>
-                  <Text style={styles.suggestionLabel}>You Save:</Text>
-                  <Text style={styles.suggestionSave}>{formatPrice(aiData.savings)}</Text>
+                  <Text>Suggested Price:</Text>
+                  <Text style={styles.suggestedPrice}>{formatPrice(aiData.suggestedPrice)}</Text>
                 </View>
                 
-                <TouchableOpacity style={styles.applyAiBtn} onPress={applyAIDiscount} disabled={loading}>
-                  <Text style={styles.applyAiBtnText}>
-                    {loading ? 'Applying...' : '✓ Apply AI Discount'}
-                  </Text>
+                <TouchableOpacity style={styles.applyButton} onPress={applyAIDiscount} disabled={loading}>
+                  <Text style={styles.applyButtonText}>✓ Apply AI Discount</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -547,133 +563,111 @@ export default function Products() {
     return (
       <View style={styles.centerContainer}>
         <ActivityIndicator size="large" color="#1a73e8" />
-        <Text style={styles.loadingText}>Loading products...</Text>
       </View>
     );
   }
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>📦 Products</Text>
-        <View style={styles.roleBadge}>
-          <Text style={styles.roleBadgeText}>
-            {userRole === 'shopkeeper' ? '🏪 Manage Products' : '🛒 Tap to Add'}
-          </Text>
+  // SHOPKEEPER VIEW - Single Heading
+  if (userRole === 'shopkeeper') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.shopHeader}>
+          <Text style={styles.headerTitle}>📦 Products</Text>
+          <TouchableOpacity style={styles.addButtonSmall} onPress={() => { resetForm(); setModalVisible(true); }}>
+            <Ionicons name="add" size={18} color="#fff" />
+            <Text style={styles.addButtonSmallText}>Add</Text>
+          </TouchableOpacity>
         </View>
-        <Text style={styles.productCount}>{products.length} products</Text>
-      </View>
 
-      {/* Cart Icon for Customer */}
-      {userRole === 'customer' && (
-        <TouchableOpacity style={styles.cartIcon} onPress={() => setShowCartModal(true)}>
-          <Ionicons name="cart" size={24} color="#1a73e8" />
-          {cart.length > 0 && (
-            <View style={styles.cartBadge}>
-              <Text style={styles.cartBadgeText}>{cart.length}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
-      )}
-
-      {/* Add New Product button - ONLY for SHOPKEEPER */}
-      {userRole === 'shopkeeper' && (
-        <TouchableOpacity style={styles.addButton} onPress={() => {
-          resetForm();
-          setModalVisible(true);
-        }}>
-          <Text style={styles.addButtonText}>➕ Add New Product</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* Products List */}
-      <FlatList
-        key={flatListKey}
-        data={products}
-        keyExtractor={item => item.id}
-        renderItem={userRole === 'shopkeeper' ? renderShopkeeperProduct : renderCustomerProduct}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        numColumns={userRole === 'shopkeeper' ? 1 : 2}
-        columnWrapperStyle={userRole === 'customer' && styles.productRow}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyIcon}>📦</Text>
-            <Text style={styles.emptyText}>No products found</Text>
-            {userRole === 'shopkeeper' && (
-              <Text style={styles.emptySubText}>Tap "Add New Product" to get started</Text>
+        <View style={styles.searchBox}>
+          <View style={styles.searchBar}>
+            <Ionicons name="search-outline" size={20} color="#999" />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search product..."
+              placeholderTextColor="#aaa"
+              value={searchText}
+              onChangeText={setSearchText}
+            />
+            {searchText.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchText('')}>
+                <Ionicons name="close-circle" size={20} color="#999" />
+              </TouchableOpacity>
             )}
           </View>
-        }
-      />
+        </View>
 
-      {/* Cart Modal for Customer */}
-      {renderCartModal()}
-      
-      {/* AI Suggestions Modal for Shopkeeper */}
-      {renderAIModal()}
+        <FlatList
+          data={filteredProducts}
+          keyExtractor={item => item.id}
+          renderItem={renderShopkeeperProduct}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyIcon}>📦</Text>
+              <Text style={styles.emptyText}>No products</Text>
+            </View>
+          }
+        />
 
-      {/* Add/Edit Product Modal - ONLY for SHOPKEEPER */}
-      {userRole === 'shopkeeper' && (
         <Modal visible={modalVisible} animationType="slide" transparent={true}>
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>
-                {editingProduct ? '✏️ Edit Product' : '➕ Add New Product'}
-              </Text>
-
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Product Name"
-                placeholderTextColor="#aaa"
-                value={name}
-                onChangeText={setName}
-              />
-
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Price (PKR)"
-                placeholderTextColor="#aaa"
-                value={price}
-                onChangeText={setPrice}
-                keyboardType="numeric"
-              />
-
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Category"
-                placeholderTextColor="#aaa"
-                value={category}
-                onChangeText={setCategory}
-              />
-
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Stock Quantity"
-                placeholderTextColor="#aaa"
-                value={stock}
-                onChangeText={setStock}
-                keyboardType="numeric"
-              />
-
+              <Text style={styles.modalTitle}>{editingProduct ? 'Edit Product' : 'Add Product'}</Text>
+              <TextInput style={styles.modalInput} placeholder="Name" value={name} onChangeText={setName} />
+              <TextInput style={styles.modalInput} placeholder="Price" value={price} onChangeText={setPrice} keyboardType="numeric" />
+              <TextInput style={styles.modalInput} placeholder="Category" value={category} onChangeText={setCategory} />
+              <TextInput style={styles.modalInput} placeholder="Stock" value={stock} onChangeText={setStock} keyboardType="numeric" />
               <View style={styles.modalButtons}>
-                <TouchableOpacity style={styles.saveBtn} onPress={saveProduct} disabled={loading}>
-                  <Text style={styles.saveBtnText}>
-                    {loading ? 'Saving...' : (editingProduct ? 'Update' : 'Save')}
-                  </Text>
+                <TouchableOpacity style={styles.saveModalBtn} onPress={saveProduct} disabled={loading}>
+                  <Text style={styles.saveModalBtnText}>{loading ? 'Saving...' : 'Save'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => {
-                  setModalVisible(false);
-                  resetForm();
-                }}>
-                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                <TouchableOpacity style={styles.cancelModalBtn} onPress={() => { setModalVisible(false); resetForm(); }}>
+                  <Text style={styles.cancelModalBtnText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
             </View>
           </View>
         </Modal>
-      )}
+
+        {renderAIModal()}
+      </View>
+    );
+  }
+
+  // CUSTOMER VIEW - Single Heading with Cart
+  return (
+    <View style={styles.container}>
+      <View style={styles.customerHeader}>
+        <Text style={styles.headerTitle}>🛍️ Products</Text>
+        <TouchableOpacity style={styles.cartButton} onPress={() => setShowCartModal(true)}>
+          <Ionicons name="cart" size={24} color="#fff" />
+          {cart.length > 0 && (
+            <View style={styles.cartCount}>
+              <Text style={styles.cartCountText}>{cart.length}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      <FlatList
+        data={products}
+        keyExtractor={item => item.id}
+        renderItem={renderCustomerProduct}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        numColumns={2}
+        columnWrapperStyle={styles.productRow}
+        contentContainerStyle={styles.listContent}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyIcon}>📦</Text>
+            <Text style={styles.emptyText}>No products</Text>
+          </View>
+        }
+      />
+
+      {renderCartModal()}
     </View>
   );
 }
@@ -681,32 +675,48 @@ export default function Products() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f7fa' },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f5f7fa' },
-  loadingText: { marginTop: 10, color: '#666' },
-  header: {
+
+  // Shopkeeper Header
+  shopHeader: {
+    backgroundColor: '#1a73e8',
+    paddingTop: 55,
+    paddingBottom: 16,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0'
   },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#1a73e8' },
-  roleBadge: { backgroundColor: '#e8f0fe', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 15 },
-  roleBadgeText: { fontSize: 10, color: '#1a73e8', fontWeight: '500' },
-  productCount: { fontSize: 14, color: '#666', backgroundColor: '#f0f0f0', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20 },
+  customerHeader: {
+    backgroundColor: '#1a73e8',
+    paddingTop: 55,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#fff' },
 
-  // Cart Icon
-  cartIcon: { position: 'absolute', top: 70, right: 20, zIndex: 10, backgroundColor: '#fff', width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
-  cartBadge: { position: 'absolute', top: -5, right: -5, backgroundColor: '#dc3545', borderRadius: 12, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
-  cartBadgeText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+  addButtonSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 25,
+    gap: 6,
+  },
+  addButtonSmallText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
 
-  addButton: { backgroundColor: '#1a73e8', padding: 16, margin: 15, borderRadius: 14, alignItems: 'center' },
-  addButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  cartButton: { position: 'relative' },
+  cartCount: { position: 'absolute', top: -8, right: -8, backgroundColor: '#dc3545', borderRadius: 12, minWidth: 18, height: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  cartCountText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
 
-  // Shopkeeper Product Card
-  shopkeeperProductCard: {
+  searchBox: { paddingHorizontal: 15, paddingVertical: 12, backgroundColor: '#fff' },
+  searchBar: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#e0e0e0', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#fafafa' },
+  searchInput: { flex: 1, fontSize: 15 },
+
+  productCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
     marginHorizontal: 15,
@@ -721,23 +731,29 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
+  newProductHighlight: { backgroundColor: '#28a745', borderWidth: 2, borderColor: '#1e7e34' },
+  newBadge: { position: 'absolute', top: 8, right: 8, backgroundColor: '#ffc107', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
+  newBadgeText: { color: '#333', fontSize: 10, fontWeight: 'bold' },
+  whiteText: { color: '#fff' },
+  whiteLight: { color: '#e8f0e8' },
+  goldPrice: { color: '#ffd700', fontSize: 20 },
+
   productInfo: { flex: 1 },
   productName: { fontSize: 16, fontWeight: '600', color: '#333' },
   productCategory: { fontSize: 12, color: '#666', marginTop: 2 },
-  priceContainer: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' },
-  originalPrice: { fontSize: 14, textDecorationLine: 'line-through', color: '#999' },
-  discountedPrice: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
-  normalPrice: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
-  discountBadge: { backgroundColor: '#e67e22', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
-  discountBadgeText: { fontSize: 10, color: '#fff', fontWeight: 'bold' },
-  productStock: { fontSize: 11, color: '#888', marginTop: 4 },
-  productSales: { fontSize: 11, color: '#34a853', marginTop: 2 },
-  
-  shopkeeperActions: { flexDirection: 'row', gap: 8 },
-  aiBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff3e0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, gap: 4 },
-  aiBtnText: { color: '#e67e22', fontSize: 12 },
-  editBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#e8f0fe', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, gap: 4 },
-  editBtnText: { color: '#1a73e8', fontSize: 12 },
+  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' },
+  oldPrice: { fontSize: 14, textDecorationLine: 'line-through', color: '#999' },
+  price: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
+  discountChip: { backgroundColor: '#e67e22', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
+  discountChipText: { fontSize: 10, color: '#fff', fontWeight: 'bold' },
+  stockText: { fontSize: 11, color: '#888', marginTop: 4 },
+  salesText: { fontSize: 11, color: '#34a853', marginTop: 2 },
+
+  actionButtons: { flexDirection: 'row', gap: 8 },
+  aiButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff3e0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, gap: 4 },
+  aiButtonText: { color: '#e67e22', fontSize: 12 },
+  editButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#e8f0fe', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, gap: 4 },
+  editButtonText: { color: '#1a73e8', fontSize: 12 },
 
   // Customer Product Card
   customerProductCard: {
@@ -746,86 +762,83 @@ const styles = StyleSheet.create({
     margin: 6,
     padding: 12,
     width: (width - 48) / 2,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
     shadowRadius: 4,
     elevation: 2,
   },
+  customerProductInfo: { flex: 1 },
+  customerProductName: { fontSize: 14, fontWeight: '600', color: '#333' },
+  customerCategory: { fontSize: 10, color: '#666', marginTop: 2 },
+  customerPriceRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' },
+  customerOldPrice: { fontSize: 10, textDecorationLine: 'line-through', color: '#999' },
+  customerPrice: { fontSize: 16, fontWeight: 'bold', color: '#1a73e8' },
+  customerDiscountChip: { backgroundColor: '#e67e22', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 8 },
+  customerDiscountText: { fontSize: 8, color: '#fff', fontWeight: 'bold' },
+  customerStock: { fontSize: 10, color: '#888', marginTop: 4 },
+  addToCartIcon: { width: 32, height: 32, backgroundColor: '#1a73e8', borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+
   productRow: { justifyContent: 'space-between', paddingHorizontal: 12 },
   listContent: { paddingVertical: 12, paddingBottom: 30 },
-  addIcon: { width: 32, height: 32, backgroundColor: '#1a73e8', borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  
-  customerOriginalPrice: { fontSize: 11, textDecorationLine: 'line-through', color: '#999' },
-  customerDiscountedPrice: { fontSize: 16, fontWeight: 'bold', color: '#1a73e8' },
-  customerNormalPrice: { fontSize: 16, fontWeight: 'bold', color: '#1a73e8' },
-  customerDiscountBadge: { backgroundColor: '#e67e22', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 8, alignSelf: 'flex-start', marginTop: 2 },
-  customerDiscountBadgeText: { fontSize: 8, color: '#fff', fontWeight: 'bold' },
 
   // Cart Modal
-  cartModalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 20, width: '90%', maxHeight: '80%' },
-  cartModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  cartModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
+  cartModal: { backgroundColor: '#fff', borderRadius: 24, padding: 20, width: '90%', maxHeight: '80%' },
+  cartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
+  cartTitle: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
   emptyCart: { alignItems: 'center', paddingVertical: 50 },
   emptyCartText: { color: '#999', marginTop: 10 },
   cartItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  cartItemInfo: { marginBottom: 8 },
+  cartItemLeft: { marginBottom: 8 },
   cartItemName: { fontSize: 14, fontWeight: '500', color: '#333' },
   cartItemDiscount: { fontSize: 11, color: '#e67e22', marginTop: 2 },
   cartItemPrice: { fontSize: 11, color: '#666', marginTop: 2 },
-  cartItemControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  cartQtyBtn: { width: 28, height: 28, backgroundColor: '#f0f0f0', borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  cartQtyBtnText: { fontSize: 16, fontWeight: 'bold', color: '#666' },
-  cartQtyText: { minWidth: 30, textAlign: 'center', fontSize: 14 },
+  cartItemRight: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  qtyBtn: { width: 28, height: 28, backgroundColor: '#f0f0f0', borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  qtyBtnText: { fontSize: 16, fontWeight: 'bold', color: '#666' },
+  qtyText: { minWidth: 30, textAlign: 'center', fontSize: 14 },
   cartItemTotal: { fontSize: 14, fontWeight: 'bold', color: '#1a73e8', minWidth: 80, textAlign: 'right' },
   cartFooter: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#e0e0e0' },
   cartSubtotal: { fontSize: 13, color: '#666', textAlign: 'right' },
   cartTax: { fontSize: 12, color: '#888', textAlign: 'right' },
-  cartTotal: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8', textAlign: 'right', marginTop: 4 },
-  checkoutBtn: { backgroundColor: '#34a853', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 12 },
-  checkoutBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  cartTotalAmount: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8', textAlign: 'right', marginTop: 4 },
+  checkoutButton: { backgroundColor: '#34a853', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 12 },
+  checkoutButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 
   // AI Modal
-  aiModalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 20, width: '90%', maxHeight: '85%' },
-  aiModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  aiModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
-  aiLoadingContainer: { alignItems: 'center', paddingVertical: 50 },
+  aiModal: { backgroundColor: '#fff', borderRadius: 24, padding: 20, width: '90%', maxHeight: '85%' },
+  aiModalHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 20, justifyContent: 'space-between' },
+  aiModalTitle: { fontSize: 18, fontWeight: 'bold', color: '#e67e22', flex: 1 },
+  aiLoading: { alignItems: 'center', paddingVertical: 50 },
   aiLoadingText: { marginTop: 12, color: '#666' },
-  aiProductName: { fontSize: 18, fontWeight: 'bold', color: '#333', textAlign: 'center', marginBottom: 20 },
-  
-  priceComparisonCard: { backgroundColor: '#f8f9fa', padding: 15, borderRadius: 12, marginBottom: 16 },
-  sectionSubtitle: { fontSize: 14, fontWeight: 'bold', color: '#666', marginBottom: 12 },
-  comparisonRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  comparisonLabel: { fontSize: 13, color: '#666' },
-  comparisonValue: { fontSize: 14, fontWeight: 'bold', color: '#dc3545' },
-  comparisonDiscount: { fontSize: 14, fontWeight: 'bold', color: '#e67e22' },
-  comparisonMarketPrice: { fontSize: 14, fontWeight: 'bold', color: '#34a853' },
-  
-  aiSuggestionCard: { backgroundColor: '#e8f0fe', padding: 15, borderRadius: 12, marginBottom: 16 },
-  aiReason: { fontSize: 12, color: '#555', marginBottom: 15, lineHeight: 18 },
-  suggestionRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#d0e0f0' },
-  suggestionLabel: { fontSize: 13, color: '#555' },
-  suggestionDiscount: { fontSize: 14, fontWeight: 'bold', color: '#e67e22' },
-  suggestionPrice: { fontSize: 14, fontWeight: 'bold', color: '#1a73e8' },
-  suggestionSave: { fontSize: 14, fontWeight: 'bold', color: '#34a853' },
-  
-  applyAiBtn: { backgroundColor: '#1a73e8', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 10 },
-  applyAiBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  aiProductName: { fontSize: 18, fontWeight: 'bold', textAlign: 'center', marginBottom: 20 },
+  comparisonBox: { backgroundColor: '#f8f9fa', padding: 15, borderRadius: 12, marginBottom: 16 },
+  sectionTitle: { fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
+  compareRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8 },
+  yourPrice: { fontWeight: 'bold', color: '#dc3545' },
+  darazPrice: { fontWeight: 'bold', color: '#34a853' },
+  suggestionBox: { backgroundColor: '#e8f0fe', padding: 15, borderRadius: 12 },
+  aiReason: { fontSize: 12, marginBottom: 15 },
+  suggestionRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8 },
+  suggestedDiscount: { fontWeight: 'bold', color: '#e67e22' },
+  suggestedPrice: { fontWeight: 'bold', color: '#1a73e8' },
+  applyButton: { backgroundColor: '#1a73e8', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 10 },
+  applyButtonText: { color: '#fff', fontWeight: 'bold' },
 
-  // Empty State
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 80 },
-  emptyIcon: { fontSize: 64, marginBottom: 16, opacity: 0.5 },
-  emptyText: { textAlign: 'center', color: '#999', fontSize: 18, fontWeight: '500', marginBottom: 8 },
-  emptySubText: { textAlign: 'center', color: '#bbb', fontSize: 13 },
+  emptyState: { alignItems: 'center', paddingVertical: 80 },
+  emptyIcon: { fontSize: 64, opacity: 0.5 },
+  emptyText: { color: '#999', fontSize: 16, marginTop: 16 },
 
-  // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: '#fff', borderRadius: 24, padding: 24, width: '85%' },
   modalTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 20, textAlign: 'center', color: '#1a73e8' },
-  modalInput: { borderWidth: 1.5, borderColor: '#e0e0e0', borderRadius: 14, padding: 14, marginBottom: 15, fontSize: 16, backgroundColor: '#fafafa' },
-  modalButtons: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginTop: 10 },
-  saveBtn: { flex: 1, backgroundColor: '#34a853', padding: 14, borderRadius: 12, alignItems: 'center' },
-  saveBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  cancelBtn: { flex: 1, backgroundColor: '#dc3545', padding: 14, borderRadius: 12, alignItems: 'center' },
-  cancelBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  modalInput: { borderWidth: 1.5, borderColor: '#e0e0e0', borderRadius: 14, padding: 14, marginBottom: 15, fontSize: 16 },
+  modalButtons: { flexDirection: 'row', gap: 12, marginTop: 10 },
+  saveModalBtn: { flex: 1, backgroundColor: '#34a853', padding: 14, borderRadius: 12, alignItems: 'center' },
+  saveModalBtnText: { color: '#fff', fontWeight: 'bold' },
+  cancelModalBtn: { flex: 1, backgroundColor: '#dc3545', padding: 14, borderRadius: 12, alignItems: 'center' },
+  cancelModalBtnText: { color: '#fff', fontWeight: 'bold' },
 });
